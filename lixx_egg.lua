@@ -1,366 +1,350 @@
--- =================================================================
--- SCRIPT NAME: LIXX EGG (BAC SAFE / BYPASS VERSION)
--- GAME: Steal and Egg
--- THEME: Minecraft Style (Green Accent)
--- =================================================================
+-- =======================================================
+-- SCRIPT LIXX EGG - MAP STEEL AND EGG
+-- Created for execution via GitHub / Roblox Executor
+-- =======================================================
 
-local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
-local SaveManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/SaveManager.lua"))()
-local InterfaceManager = loadstring(game:HttpGet("https://raw.githubusercontent.com/dawid-scripts/Fluent/master/Addons/InterfaceManager.lua"))()
-
--- Players & Services
 local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
 local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+local LocalPlayer = Players.LocalPlayer
 
--- Configuration & State Variables
-local Config = {
+-- Config Default Telegram
+local TelegramConfig = {
+    BotToken = "YOUR_BOT_TOKEN_HERE",
+    ChatID = "YOUR_CHAT_ID_HERE",
+    Enabled = false
+}
+
+-- System History Storage
+local HistoryLogs = {}
+
+-- State System
+local Flags = {
     AutoSteal = false,
     SpeedBoost = false,
-    WalkSpeedValue = 16,
-    DuelPlayer = false,
-    TelegramNotif = false,
-    BotToken = "",
-    ChatID = "",
-    EggHistory = {}
+    SpeedValue = 50,
+    Notification = false
 }
 
--- Rarity Priority Hierarchy
-local RarityPriority = {
-    ["Divine"] = 3,
-    ["Eternal"] = 2,
-    ["Secret"] = 1
-}
+-- Base Coordinates (Disesuaikan otomatis jika ada area base player)
+local ForestCFrame = CFrame.new(100, 10, 200) -- Ganti dengan CFrame Forest yang presisi di map
+local BaseCFrame = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character.HumanoidRootPart.CFrame or CFrame.new(0, 10, 0)
 
--- Safe Smooth Movement (Pengganti Teleport Instan agar BAC tidak Kick)
-local function SafeMoveTo(targetPosition, speed)
-    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
-    local hrp = LocalPlayer.Character.HumanoidRootPart
-    local distance = (targetPosition - hrp.Position).Magnitude
-    local timeToTravel = math.clamp(distance / (speed or 30), 0.3, 5) -- Batas kecepatan aman
+-- Function Safe Movement (Anti-Detection / Anti-Kick)
+local function SafeMoveTo(targetCFrame, speedMultiplier)
+    local char = LocalPlayer.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+    local hrp = char.HumanoidRootPart
 
-    local tweenInfo = TweenInfo.new(timeToTravel, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
-    local tween = TweenService:Create(hrp, tweenInfo, {CFrame = CFrame.new(targetPosition)})
+    local distance = (hrp.Position - targetCFrame.Position).Magnitude
+    local duration = math.clamp(distance / (30 * (speedMultiplier or 1)), 0.3, 3) -- Gerakan smooth, tidak terlalu kencang
+
+    local tweenInfo = TweenInfo.new(duration, Enum.EasingStyle.Linear)
+    local tween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCFrame})
     
-    -- Temporarily disable collision to prevent physics velocity detection
-    for _, part in pairs(LocalPlayer.Character:GetChildren()) do
-        if part:IsA("BasePart") then part.CanCollide = false end
-    end
-    
+    -- Temporarily bypass collision/fall detection
+    hrp.Velocity = Vector3.zero
     tween:Play()
     tween.Completed:Wait()
-
-    for _, part in pairs(LocalPlayer.Character:GetChildren()) do
-        if part:IsA("BasePart") then part.CanCollide = true end
-    end
 end
 
-local function GetBasePosition()
-    if workspace:FindFirstChild("Bases") then
-        for _, base in pairs(workspace.Bases:GetChildren()) do
-            if base:FindFirstChild("Owner") and base.Owner.Value == LocalPlayer.Name then
-                return base:GetPivot().Position
-            end
-        end
-    end
-    return LocalPlayer.Character and LocalPlayer.Character:GetPivot().Position or Vector3.new(0,0,0)
-end
-
-local function GetForestPosition()
-    if workspace:FindFirstChild("Forest") then
-        return workspace.Forest:GetPivot().Position
-    end
-    return Vector3.new(100, 10, 100)
-end
-
--- Safe Steal Sequence (BAC Safe)
-local function SafeStealSequence(eggTarget)
-    if not eggTarget or not eggTarget:IsDescendantOf(workspace) then return end
+-- Teleport Sequence (Lari -> Ambil -> Forest (2s) -> Base)
+local function ExecuteStealSequence(eggObject)
+    if not eggObject or not eggObject:IsA("Model") and not eggObject:IsA("BasePart") then return end
     
-    -- Smooth Walk/Fly to Egg
-    SafeMoveTo(eggTarget:GetPivot().Position, Config.WalkSpeedValue)
-    task.wait(0.2)
-
-    -- Safe Trigger Interaction
-    local prompt = eggTarget:FindFirstChildOfClass("ProximityPrompt") or eggTarget:FindFirstChild("ProximityPrompt", true)
-    if prompt then
-        fireproximityprompt(prompt)
-    end
-    task.wait(0.3)
-
-    -- Smooth Move to Forest -> Wait 2s -> Smooth Move to Base
-    SafeMoveTo(GetForestPosition(), 40)
-    task.wait(2)
-    SafeMoveTo(GetBasePosition(), 40)
-end
-
-local function SendTelegramNotification(eggName, rarity)
-    if not Config.TelegramNotif or Config.BotToken == "" or Config.ChatID == "" then return end
-    local payload = HttpService:JSONEncode({
-        chat_id = Config.ChatID,
-        text = string.format("🎉 [LIXX EGG] Player %s berhasil mengambil telur!\n🥚 Nama: %s\n✨ Rarity: %s", LocalPlayer.Name, eggName, rarity)
+    local targetPos = eggObject:GetPivot()
+    
+    -- 1. Lari ke Telur secara halus
+    SafeMoveTo(targetPos, 1.5)
+    
+    -- 2. Ambil Telur (Fire Touch / ProximityPrompt / Interaction Event)
+    firetouchinterest(LocalPlayer.Character.HumanoidRootPart, eggObject:IsA("Model") and eggObject.PrimaryPart or eggObject, 0)
+    task.wait(0.1)
+    firetouchinterest(LocalPlayer.Character.HumanoidRootPart, eggObject:IsA("Model") and eggObject.PrimaryPart or eggObject, 1)
+    
+    -- Log History
+    table.insert(HistoryLogs, {
+        Time = os.date("%X"),
+        Name = eggObject.Name,
+        Rarity = eggObject:GetAttribute("Rarity") or "Unknown"
     })
     
-    local request = (syn and syn.request) or (http and http.request) or http_request or request
-    if request then
-        request({
-            Url = "https://api.telegram.org/bot" .. Config.BotToken .. "/sendMessage",
-            Method = "POST",
-            Headers = {["Content-Type"] = "application/json"},
-            Body = payload
-        })
+    -- Send Telegram Notification if Enabled
+    if Flags.Notification and TelegramConfig.BotToken ~= "YOUR_BOT_TOKEN_HERE" then
+        task.spawn(function()
+            local msg = "🎉 **LIXX EGG NOTIFICATION**\nBerhasil mengambil telur: " .. eggObject.Name
+            local url = "https://api.telegram.org/bot" .. TelegramConfig.BotToken .. "/sendMessage"
+            local payload = HttpService:JSONEncode({
+                chat_id = TelegramConfig.ChatID,
+                text = msg,
+                parse_mode = "Markdown"
+            })
+            pcall(function()
+                request({
+                    Url = url,
+                    Method = "POST",
+                    Headers = {["Content-Type"] = "application/json"},
+                    Body = payload
+                })
+            end)
+        end)
+    end
+
+    -- 3. Teleport Smooth ke Forest & Berhenti 2 Detik
+    SafeMoveTo(ForestCFrame, 2)
+    task.wait(2)
+
+    -- 4. Teleport ke Base
+    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        SafeMoveTo(BaseCFrame, 2)
     end
 end
 
--- UI CREATION
-local Window = Fluent:CreateWindow({
-    Title = "LIXX EGG (BAC SAFE)",
-    SubTitle = "by LIXX",
-    TabWidth = 160,
-    Size = UDim2.fromOffset(580, 460),
-    Acrylic = false,
-    Theme = "Darker",
-    MinimizeKey = Enum.KeyCode.LeftControl
-})
+-- Prioritas Auto Steal: Divine > Eternal > Secret
+task.spawn(function()
+    while task.wait(1) do
+        if Flags.AutoSteal then
+            local workspaceEggs = workspace:FindFirstChild("Eggs") or workspace
+            local targetEgg = nil
 
-Window.Root.BackgroundColor3 = Color3.fromRGB(20, 35, 20)
-
-local Tabs = {
-    AutoEgg = Window:AddTab({ Title = "Auto Egg", Icon = "egg" }),
-    HistoryEgg = Window:AddTab({ Title = "History Egg", Icon = "history" }),
-    DuelPlayer = Window:AddTab({ Title = "Duel Player", Icon = "swords" }),
-    Notification = Window:AddTab({ Title = "Notification", Icon = "bell" }),
-    Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
-}
-
--- 1. AUTO EGG
-Tabs.AutoEgg:AddToggle("AutoStealToggle", {
-    Title = "Steal On/Off (BAC Safe)",
-    Default = false,
-    Callback = function(Value)
-        Config.AutoSteal = Value
-        task.spawn(function()
-            while Config.AutoSteal do
-                task.wait(1) -- Delay aman agar tidak terdeteksi spamming
-                local bestEgg = nil
-                local highestRank = 0
-
-                if workspace:FindFirstChild("Eggs") then
-                    for _, egg in pairs(workspace.Eggs:GetChildren()) do
-                        local rarity = egg:GetAttribute("Rarity") or "Common"
-                        local rank = RarityPriority[rarity] or 0
-                        if rank > highestRank then
-                            highestRank = rank
-                            bestEgg = egg
-                        end
-                    end
-                end
-
-                if bestEgg then
-                    SafeStealSequence(bestEgg)
-                    table.insert(Config.EggHistory, {Name = bestEgg.Name, Time = os.date("%X")})
-                    SendTelegramNotification(bestEgg.Name, bestEgg:GetAttribute("Rarity") or "Unknown")
+            -- Prioritas 1: Divine
+            for _, egg in pairs(workspaceEggs:GetChildren()) do
+                if egg:GetAttribute("Rarity") == "Divine" or egg.Name:find("Divine") then
+                    targetEgg = egg
+                    break
                 end
             end
-        end)
-    end
-})
 
-Tabs.AutoEgg:AddButton({
-    Title = "Buka Panel Telur",
-    Description = "Tampilkan UI Telur & Isi Rarity",
-    Callback = function()
-        local PanelGui = Instance.new("ScreenGui", game.CoreGui)
-        PanelGui.Name = "LIXX_EggPanel"
-
-        local MainFrame = Instance.new("Frame", PanelGui)
-        MainFrame.Size = UDim2.fromOffset(320, 400)
-        MainFrame.Position = UDim2.fromScale(0.35, 0.25)
-        MainFrame.BackgroundColor3 = Color3.fromRGB(35, 60, 35)
-        MainFrame.BorderSizePixel = 3
-        MainFrame.BorderColor3 = Color3.fromRGB(80, 160, 80)
-
-        local Title = Instance.new("TextLabel", MainFrame)
-        Title.Size = UDim2.new(1, -30, 0, 30)
-        Title.Text = "EGG PANEL (MINECRAFT STYLE)"
-        Title.TextColor3 = Color3.fromRGB(255, 255, 255)
-        Title.BackgroundColor3 = Color3.fromRGB(20, 40, 20)
-
-        local CloseBtn = Instance.new("TextButton", MainFrame)
-        CloseBtn.Size = UDim2.fromOffset(30, 30)
-        CloseBtn.Position = UDim2.new(1, -30, 0, 0)
-        CloseBtn.Text = "X"
-        CloseBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
-        CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        CloseBtn.MouseButton1Click:Connect(function()
-            PanelGui:Destroy()
-        end)
-
-        local Scroll = Instance.new("ScrollingFrame", MainFrame)
-        Scroll.Size = UDim2.new(1, 0, 1, -30)
-        Scroll.Position = UDim2.fromOffset(0, 30)
-        Scroll.CanvasSize = UDim2.new(0, 0, 2, 0)
-
-        local Layout = Instance.new("UIListLayout", Scroll)
-        Layout.SortOrder = Enum.SortOrder.LayoutOrder
-
-        if workspace:FindFirstChild("Eggs") then
-            local eggList = workspace.Eggs:GetChildren()
-            table.sort(eggList, function(a, b)
-                return (RarityPriority[a:GetAttribute("Rarity")] or 0) > (RarityPriority[b:GetAttribute("Rarity")] or 0)
-            end)
-
-            for _, egg in pairs(eggList) do
-                local Item = Instance.new("Frame", Scroll)
-                Item.Size = UDim2.new(1, -10, 0, 50)
-                Item.BackgroundColor3 = Color3.fromRGB(45, 75, 45)
-
-                local Label = Instance.new("TextLabel", Item)
-                Label.Size = UDim2.new(0.6, 0, 1, 0)
-                Label.Text = egg.Name .. " (" .. tostring(egg:GetAttribute("Rarity")) .. ")"
-                Label.TextColor3 = Color3.fromRGB(255, 255, 255)
-
-                local StealBtn = Instance.new("TextButton", Item)
-                StealBtn.Size = UDim2.new(0.35, 0, 0.8, 0)
-                StealBtn.Position = UDim2.new(0.62, 0, 0.1, 0)
-                StealBtn.Text = "STEAL"
-                StealBtn.BackgroundColor3 = Color3.fromRGB(60, 140, 60)
-                StealBtn.MouseButton1Click:Connect(function()
-                    SafeStealSequence(egg)
-                end)
-            end
-        end
-    end
-})
-
--- Speed Boost dibatasi max 45 agar tidak memicu BAC
-local SpeedSlider = Tabs.AutoEgg:AddSlider("SpeedSlider", {
-    Title = "Speed Boost Value (Max 45 untuk BAC Safe)",
-    Min = 16,
-    Max = 45,
-    Default = 30,
-    Rounding = 0,
-    Callback = function(Value)
-        Config.WalkSpeedValue = Value
-        if Config.SpeedBoost and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
-            LocalPlayer.Character.Humanoid.WalkSpeed = Value
-        end
-    end
-})
-
-Tabs.AutoEgg:AddToggle("SpeedBoostToggle", {
-    Title = "Speed Boost On/Off",
-    Default = false,
-    Callback = function(Value)
-        Config.SpeedBoost = Value
-        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
-            LocalPlayer.Character.Humanoid.WalkSpeed = Value and Config.WalkSpeedValue or 16
-        end
-    end
-})
-
--- 2. HISTORY EGG
-local HistoryParagraph = Tabs.HistoryEgg:AddParagraph({
-    Title = "Catatan Pengambilan Telur",
-    Content = "Belum ada history."
-})
-
-Tabs.HistoryEgg:AddButton({
-    Title = "Refresh History",
-    Callback = function()
-        local text = ""
-        for i, v in ipairs(Config.EggHistory) do
-            text = text .. string.format("[%s] Telur: %s\n", v.Time, v.Name)
-        end
-        HistoryParagraph:SetDesc(text ~= "" and text or "Belum ada history.")
-    end
-})
-
-Tabs.HistoryEgg:AddButton({
-    Title = "Delete History",
-    Callback = function()
-        Config.EggHistory = {}
-        HistoryParagraph:SetDesc("History berhasil dihapus.")
-    end
-})
-
--- 3. DUEL PLAYER
-Tabs.DuelPlayer:AddButton({
-    Title = "Refresh Player List",
-    Callback = function()
-        for _, targetPlayer in pairs(Players:GetPlayers()) do
-            if targetPlayer ~= LocalPlayer then
-                local hasEgg = targetPlayer.Character and targetPlayer.Character:FindFirstChild("CarriedEgg") ~= nil
-                local btnColor = hasEgg and "[HIJAU - BAWA EGG]" or "[MERAH - NO EGG]"
-                
-                Tabs.DuelPlayer:AddButton({
-                    Title = targetPlayer.Name .. " " .. btnColor,
-                    Callback = function()
-                        if targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
-                            SafeMoveTo(targetPlayer.Character.HumanoidRootPart.Position, Config.WalkSpeedValue)
-                            
-                            local club = LocalPlayer.Backpack:FindFirstChild("WoodenClub") or LocalPlayer.Character:FindFirstChild("WoodenClub")
-                            if club then
-                                club.Parent = LocalPlayer.Character
-                                club:Activate()
-                            end
-                            
-                            task.wait(1)
-                            local droppedEgg = workspace:FindFirstChild("DroppedEgg")
-                            if droppedEgg then
-                                SafeStealSequence(droppedEgg)
-                            end
-                        end
+            -- Prioritas 2: Eternal
+            if not targetEgg then
+                for _, egg in pairs(workspaceEggs:GetChildren()) do
+                    if egg:GetAttribute("Rarity") == "Eternal" or egg.Name:find("Eternal") then
+                        targetEgg = egg
+                        break
                     end
-                })
+                end
+            end
+
+            -- Prioritas 3: Secret
+            if not targetEgg then
+                for _, egg in pairs(workspaceEggs:GetChildren()) do
+                    if egg:GetAttribute("Rarity") == "Secret" or egg.Name:find("Secret") then
+                        targetEgg = egg
+                        break
+                    end
+                end
+            end
+
+            if targetEgg then
+                ExecuteStealSequence(targetEgg)
             end
         end
     end
-})
-
--- 4. TELEGRAM NOTIFICATION
-Tabs.Notification:AddToggle("NotifToggle", {
-    Title = "Telegram Notification On/Off",
-    Default = false,
-    Callback = function(Value) Config.TelegramNotif = Value end
-})
-
-Tabs.Notification:AddInput("BotTokenInput", {
-    Title = "Bot Token Telegram",
-    Default = "",
-    Placeholder = "Masukkan Token Bot...",
-    Callback = function(Value) Config.BotToken = Value end
-})
-
-Tabs.Notification:AddInput("ChatIDInput", {
-    Title = "ID Penerima (Chat ID)",
-    Default = "",
-    Placeholder = "Masukkan Chat ID...",
-    Callback = function(Value) Config.ChatID = Value end
-})
-
--- 5. SETTINGS
-InterfaceManager:BuildInterfaceSection(Tabs.Settings)
-SaveManager:BuildConfigSection(Tabs.Settings)
-
--- LOGO TOGGLE [L] UI
-local ToggleGui = Instance.new("ScreenGui", game.CoreGui)
-ToggleGui.Name = "LIXX_Toggle"
-
-local OpenBtn = Instance.new("TextButton", ToggleGui)
-OpenBtn.Size = UDim2.fromOffset(45, 45)
-OpenBtn.Position = UDim2.new(0, 15, 0.5, -22)
-OpenBtn.Text = "L"
-OpenBtn.TextSize = 24
-OpenBtn.Font = Enum.Font.SourceSansBold
-OpenBtn.BackgroundColor3 = Color3.fromRGB(35, 100, 35)
-OpenBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-OpenBtn.BorderSizePixel = 2
-OpenBtn.BorderColor3 = Color3.fromRGB(80, 200, 80)
-
-OpenBtn.MouseButton1Click:Connect(function()
-    Window:Minimize()
 end)
 
-Window:SelectTab(1)
+-- Speed Boost Handling
+RunService.Stepped:Connect(function()
+    if Flags.SpeedBoost and LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid") then
+        LocalPlayer.Character:FindFirstChildOfClass("Humanoid").WalkSpeed = Flags.SpeedValue
+    end
+end)
+
+-- =======================================================
+-- BUILD UI INTERFACE (Minecraft Style Dark/Green Theme)
+-- =======================================================
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "LIXX_EGG_UI"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+-- Logo Toggle Widget (L)
+local LogoBtn = Instance.new("TextButton")
+LogoBtn.Size = UDim2.new(0, 45, 0, 45)
+LogoBtn.Position = UDim2.new(0.02, 0, 0.4, 0)
+LogoBtn.BackgroundColor3 = Color3.fromRGB(35, 140, 35)
+LogoBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+LogoBtn.Text = "L"
+LogoBtn.Font = Enum.Font.SourceSansBold
+LogoBtn.TextSize = 28
+LogoBtn.Visible = false
+LogoBtn.Parent = ScreenGui
+
+local UICornerLogo = Instance.new("UICorner", LogoBtn)
+UICornerLogo.CornerRadius = UDim.new(0, 8)
+
+-- Main Frame UI
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 620, 0, 360)
+MainFrame.Position = UDim2.new(0.5, -310, 0.5, -180)
+MainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+MainFrame.BorderSizePixel = 0
+MainFrame.Parent = ScreenGui
+
+local MainCorner = Instance.new("UICorner", MainFrame)
+MainCorner.CornerRadius = UDim.new(0, 10)
+
+-- Header Title & Close (X)
+local TitleBar = Instance.new("Frame")
+TitleBar.Size = UDim2.new(1, 0, 0, 40)
+TitleBar.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+TitleBar.Parent = MainFrame
+
+local TitleText = Instance.new("TextLabel")
+TitleText.Text = "SCRIPT LIXX EGG"
+TitleText.TextColor3 = Color3.fromRGB(85, 255, 85)
+TitleText.Font = Enum.Font.SourceSansBold
+TitleText.TextSize = 20
+TitleText.Position = UDim2.new(0, 15, 0, 0)
+TitleText.Size = UDim2.new(0, 200, 1, 0)
+TitleText.TextXAlignment = Enum.TextXAlignment.Left
+TitleText.BackgroundTransparency = 1
+TitleText.Parent = TitleBar
+
+local CloseBtn = Instance.new("TextButton")
+CloseBtn.Text = "X"
+CloseBtn.TextColor3 = Color3.fromRGB(255, 85, 85)
+CloseBtn.Font = Enum.Font.SourceSansBold
+CloseBtn.TextSize = 22
+CloseBtn.Size = UDim2.new(0, 40, 1, 0)
+CloseBtn.Position = UDim2.new(1, -40, 0, 0)
+CloseBtn.BackgroundTransparency = 1
+CloseBtn.Parent = TitleBar
+
+CloseBtn.MouseButton1Click:Connect(function()
+    MainFrame.Visible = false
+    LogoBtn.Visible = true
+end)
+
+LogoBtn.MouseButton1Click:Connect(function()
+    MainFrame.Visible = true
+    LogoBtn.Visible = false
+end)
+
+-- Sidebar Menu (5 Menu Navigasi)
+local Sidebar = Instance.new("Frame")
+Sidebar.Size = UDim2.new(0, 160, 1, -40)
+Sidebar.Position = UDim2.new(0, 0, 0, 40)
+Sidebar.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+Sidebar.Parent = MainFrame
+
+local UIListLayoutSide = Instance.new("UIListLayout", Sidebar)
+UIListLayoutSide.Padding = UDim.new(0, 5)
+
+-- Container Halaman
+local ContentFolder = Instance.new("Frame")
+ContentFolder.Size = UDim2.new(1, -170, 1, -50)
+ContentFolder.Position = UDim2.new(0, 165, 0, 45)
+ContentFolder.BackgroundTransparency = 1
+ContentFolder.Parent = MainFrame
+
+local Pages = {}
+
+local function CreateMenuButton(name, pageName)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, -10, 0, 40)
+    btn.Position = UDim2.new(0, 5, 0, 0)
+    btn.Text = name
+    btn.TextColor3 = Color3.fromRGB(220, 220, 220)
+    btn.Font = Enum.Font.SourceSans
+    btn.TextSize = 16
+    btn.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+    btn.Parent = Sidebar
+
+    local page = Instance.new("ScrollingFrame")
+    page.Size = UDim2.new(1, 0, 1, 0)
+    page.BackgroundTransparency = 1
+    page.Visible = false
+    page.Parent = ContentFolder
+    page.ScrollBarThickness = 4
+    Pages[pageName] = page
+
+    btn.MouseButton1Click:Connect(function()
+        for _, p in pairs(Pages) do p.Visible = false end
+        page.Visible = true
+    end)
+    return page
+end
+
+-- 1. Auto Egg Page
+local AutoEggPage = CreateMenuButton("Auto Egg", "AutoEgg")
+AutoEggPage.Visible = true
+
+-- Toggle Auto Steal
+local StealToggle = Instance.new("TextButton")
+StealToggle.Size = UDim2.new(1, -10, 0, 40)
+StealToggle.Text = "Steal On/Off: OFF"
+StealToggle.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+StealToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+StealToggle.Parent = AutoEggPage
+
+StealToggle.MouseButton1Click:Connect(function()
+    Flags.AutoSteal = not Flags.AutoSteal
+    StealToggle.Text = "Steal On/Off: " .. (Flags.AutoSteal and "ON" or "OFF")
+    StealToggle.BackgroundColor3 = Flags.AutoSteal and Color3.fromRGB(35, 140, 35) or Color3.fromRGB(40, 40, 40)
+end)
+
+-- Speed Boost UI
+local SpeedFrame = Instance.new("Frame")
+SpeedFrame.Size = UDim2.new(1, -10, 0, 80)
+SpeedFrame.Position = UDim2.new(0, 0, 0, 50)
+SpeedFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+SpeedFrame.Parent = AutoEggPage
+
+local SpeedLabel = Instance.new("TextLabel")
+SpeedLabel.Text = "Speed Boost Value: 50"
+SpeedLabel.Size = UDim2.new(1, 0, 0, 30)
+SpeedLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+SpeedLabel.BackgroundTransparency = 1
+SpeedLabel.Parent = SpeedFrame
+
+local SpeedToggle = Instance.new("TextButton")
+SpeedToggle.Size = UDim2.new(1, -20, 0, 35)
+SpeedToggle.Position = UDim2.new(0, 10, 0, 35)
+SpeedToggle.Text = "Speed Boost On/Off: OFF"
+SpeedToggle.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+SpeedToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+SpeedToggle.Parent = SpeedFrame
+
+SpeedToggle.MouseButton1Click:Connect(function()
+    Flags.SpeedBoost = not Flags.SpeedBoost
+    SpeedToggle.Text = "Speed Boost On/Off: " .. (Flags.SpeedBoost and "ON" or "OFF")
+    SpeedToggle.BackgroundColor3 = Flags.SpeedBoost and Color3.fromRGB(35, 140, 35) or Color3.fromRGB(50, 50, 50)
+end)
+
+-- 2. History Egg Page
+local HistoryPage = CreateMenuButton("History Egg", "History")
+local ClearHistBtn = Instance.new("TextButton")
+ClearHistBtn.Size = UDim2.new(1, -10, 0, 35)
+ClearHistBtn.Text = "Delete History"
+ClearHistBtn.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
+ClearHistBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ClearHistBtn.Parent = HistoryPage
+
+-- 3. Duel Player Page
+local DuelPage = CreateMenuButton("Duel Player", "Duel")
+local RefreshPlayersBtn = Instance.new("TextButton")
+RefreshPlayersBtn.Size = UDim2.new(1, -10, 0, 35)
+RefreshPlayersBtn.Text = "Refresh Server Players"
+RefreshPlayersBtn.BackgroundColor3 = Color3.fromRGB(35, 140, 35)
+RefreshPlayersBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+RefreshPlayersBtn.Parent = DuelPage
+
+-- 4. Notification Page
+local NotifPage = CreateMenuButton("Notification", "Notification")
+local NotifToggle = Instance.new("TextButton")
+NotifToggle.Size = UDim2.new(1, -10, 0, 40)
+NotifToggle.Text = "Notification On/Off: OFF"
+NotifToggle.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+NotifToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
+NotifToggle.Parent = NotifPage
+
+NotifToggle.MouseButton1Click:Connect(function()
+    Flags.Notification = not Flags.Notification
+    NotifToggle.Text = "Notification On/Off: " .. (Flags.Notification and "ON" or "OFF")
+    NotifToggle.BackgroundColor3 = Flags.Notification and Color3.fromRGB(35, 140, 35) or Color3.fromRGB(40, 40, 40)
+end)
+
+-- 5. Settings Page
+local SettingsPage = CreateMenuButton("Settings", "Settings")
