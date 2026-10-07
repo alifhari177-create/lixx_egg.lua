@@ -1,7 +1,7 @@
 -- =================================================================
--- SCRIPT NAME: LIXX EGG
--- SYSTEM: Auto Egg Stealer, History, Panel, Duel Player & Notifier
--- DESIGN: Glassmorphism (Kaca) + Toggle Button "L"
+-- SCRIPT NAME: LIXX EGG (FIXED FULL ENGINE)
+-- AUTHOR: LIXX
+-- MAP: Steal an Egg (Roblox)
 -- =================================================================
 
 local Players = game:GetService("Players")
@@ -10,7 +10,7 @@ local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer
 
--- Global Configuration & State Management
+-- Master Configuration
 getgenv().LixxEggConfig = getgenv().LixxEggConfig or {
 	AutoSteal = false,
 	SpeedBoost = false,
@@ -23,64 +23,102 @@ getgenv().LixxEggConfig = getgenv().LixxEggConfig or {
 }
 
 local Config = getgenv().LixxEggConfig
+local IsStealing = false
 
--- Utility: Safe Workspace Queries
-local function GetEggsInWorkspace()
-	local eggs = {}
-	for _, obj in ipairs(workspace:GetDescendants()) do
-		if obj:IsA("Model") and (obj.Name:find("Egg") or obj:FindFirstChild("ProximityPrompt") or obj:FindFirstChild("TouchInterest")) then
-			local rarity = obj:GetAttribute("Rarity") or obj.Name
-			table.insert(eggs, {Instance = obj, Name = obj.Name, Rarity = tostring(rarity)})
-		end
+-- Safe Teleport / Tween Movement (Anti-Desync & Anti-Cheat Bypass)
+local function SmoothMoveTo(targetCFrame, speed)
+	local char = LocalPlayer.Character
+	if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+	local root = char.HumanoidRootPart
+	
+	local distance = (root.Position - targetCFrame.Position).Magnitude
+	local timeToTravel = math.max(distance / (speed or 80), 0.1)
+
+	local tweenInfo = TweenInfo.new(timeToTravel, Enum.EasingStyle.Linear)
+	local tween = TweenService:Create(root, tweenInfo, {CFrame = targetCFrame})
+	
+	-- Matikan physics benturan saat teleport
+	for _, part in ipairs(char:GetDescendants()) do
+		if part:IsA("BasePart") then part.CanCollide = false end
 	end
-	return eggs
+	
+	tween:Play()
+	tween.Completed:Wait()
 end
 
--- Rarity Weight System: Divine > Eternal > Secret
-local function GetRarityWeight(rarityName)
-	local str = string.lower(rarityName)
-	if str:find("divine") then return 3 end
-	if str:find("eternal") then return 2 end
-	if str:find("secret") then return 1 end
+-- Deteksi Seluruh Telur & Rarity
+local function GetWorldEggs()
+	local eggsList = {}
+	for _, v in ipairs(workspace:GetDescendants()) do
+		if v:IsA("ProximityPrompt") and (v.ObjectText:find("Egg") or v.ActionText:find("Mencuri") or v.ActionText:find("Steal") or v.Parent.Name:find("Egg")) then
+			local eggModel = v.Parent
+			while eggModel and not eggModel:IsA("Model") and eggModel.Parent ~= workspace do
+				eggModel = eggModel.Parent
+			end
+			if eggModel then
+				local rarity = eggModel:GetAttribute("Rarity") or eggModel:GetAttribute("Tier") or "Secret"
+				local name = eggModel.Name
+				table.insert(eggsList, {
+					Model = eggModel,
+					Prompt = v,
+					Name = name,
+					Rarity = tostring(rarity)
+				})
+			end
+		end
+	end
+	return eggsList
+end
+
+-- Bobot Rarity: Divine (3) > Eternal (2) > Secret (1)
+local function GetRarityPriority(rarityStr)
+	local s = string.lower(rarityStr)
+	if s:find("divine") then return 3
+	elseif s:find("eternal") then return 2
+	elseif s:find("secret") then return 1
+	end
 	return 0
 end
 
--- Teleport & Steal Sequence Execution
-local function ExecuteStealSequence(targetEggModel)
-	if not targetEggModel or not targetEggModel:IsDescendantOf(workspace) then return end
+-- EKSEKUSI STEAL TELUR (SEQUENCE LENGKAP)
+local function DoStealEgg(eggData)
+	if IsStealing or not eggData or not eggData.Prompt then return end
+	IsStealing = true
+
 	local char = LocalPlayer.Character
-	if not char or not char:FindFirstChild("HumanoidRootPart") then return end
-
-	local root = char.HumanoidRootPart
-	local targetPart = targetEggModel.PrimaryPart or targetEggModel:FindFirstChildWhichPart("BasePart")
-	if not targetPart then return end
-
-	-- 1. Lari/Teleport Cepat ke Telur & Ambil
-	root.CFrame = targetPart.CFrame * CFrame.new(0, 2, 0)
-	task.wait(0.1)
-
-	-- Trigger Interaksi/ProximityPrompt jika ada
-	for _, prompt in ipairs(targetEggModel:GetDescendants()) do
-		if prompt:IsA("ProximityPrompt") then
-			fireproximityprompt(prompt)
-		end
+	if not char or not char:FindFirstChild("HumanoidRootPart") then 
+		IsStealing = false 
+		return 
 	end
 
-	-- Record History
+	local targetPart = eggData.Prompt.Parent
+	if targetPart:IsA("Model") then targetPart = targetPart.PrimaryPart or targetPart:FindFirstChildWhichPart("BasePart") end
+	if not targetPart then IsStealing = false return end
+
+	-- 1. Bergerak Cepat ke Telur
+	SmoothMoveTo(targetPart.CFrame * CFrame.new(0, 2, 3), Config.SpeedValue)
+	task.wait(0.1)
+
+	-- 2. Trigger Ambil Telur (Fire Proximity Prompt)
+	pcall(function()
+		fireproximityprompt(eggData.Prompt)
+	end)
+	task.wait(0.3)
+
+	-- Catat ke History
 	table.insert(Config.History, {
-		Name = targetEggModel.Name,
-		Time = os.date("%X"),
-		Rarity = targetEggModel:GetAttribute("Rarity") or "Unknown"
+		Name = eggData.Name,
+		Rarity = eggData.Rarity,
+		Time = os.date("%H:%M:%S")
 	})
 
-	-- Send Telegram Notification jika diaktifkan
+	-- Kirim Telegram Notifikasi jika aktif
 	if Config.NotifEnabled and Config.TelegramToken ~= "" and Config.TelegramChatID ~= "" then
 		task.spawn(function()
-			local msg = "🎉 **LIXX EGG NOTIFIER**\nBerhasil Mencuri: " .. targetEggModel.Name .. "\nWaktu: " .. os.date("%X")
 			local url = "https://api.telegram.org/bot" .. Config.TelegramToken .. "/sendMessage"
-			local data = HttpService:JSONEncode({
+			local body = HttpService:JSONEncode({
 				chat_id = Config.TelegramChatID,
-				text = msg,
+				text = "🔥 *LIXX EGG NOTIFIER*\n\n✅ Berhasil mencuri: *" .. eggData.Name .. "*\n⭐ Rarity: *" .. eggData.Rarity .. "*\n⏰ Jam: " .. os.date("%X"),
 				parse_mode = "Markdown"
 			})
 			pcall(function()
@@ -88,415 +126,388 @@ local function ExecuteStealSequence(targetEggModel)
 					Url = url,
 					Method = "POST",
 					Headers = {["Content-Type"] = "application/json"},
-					Body = data
+					Body = body
 				})
 			end)
 		end)
 	end
 
-	-- 2. Lari otomatis ke Wilayah Forest
-	local forest = workspace:FindFirstChild("Forest") or workspace:FindFirstChild("ForestZone")
+	-- 3. Teleport ke Wilayah Forest
+	local forest = workspace:FindFirstChild("Forest", true) or workspace:FindFirstChild("ForestZone", true)
 	if forest then
-		local forestPart = forest:IsA("BasePart") and forest or forest:FindFirstChildWhichPart("BasePart")
-		if forestPart then
-			root.CFrame = forestPart.CFrame
-		end
+		local fPart = forest:IsA("BasePart") and forest or forest:FindFirstChildWhichPart("BasePart")
+		if fPart then SmoothMoveTo(fPart.CFrame * CFrame.new(0, 3, 0), 120) end
 	end
 
-	-- 3. Berhenti 2 Detik di Forest
+	-- 4. Berhenti 2 Detik di Forest
 	task.wait(2)
 
-	-- 4. Teleport ke Base
-	local base = workspace:FindFirstChild("Bases") or workspace:FindFirstChild("PlayerBases")
-	if base then
-		local myBase = base:FindFirstChild(LocalPlayer.Name) or base:FindFirstChildWhichPart("BasePart")
+	-- 5. Teleport ke Base
+	local bases = workspace:FindFirstChild("Bases", true) or workspace:FindFirstChild("Plots", true)
+	if bases then
+		local myBase = bases:FindFirstChild(LocalPlayer.Name, true)
 		if myBase then
-			root.CFrame = (myBase.PrimaryPart or myBase).CFrame * CFrame.new(0, 3, 0)
+			local bPart = myBase:IsA("BasePart") and myBase or myBase:FindFirstChildWhichPart("BasePart")
+			if bPart then SmoothMoveTo(bPart.CFrame * CFrame.new(0, 4, 0), 150) end
 		end
 	end
+
+	IsStealing = false
 end
 
--- UI CREATION SYSTEM (Glassmorphism Concept)
+-- =================================================================
+-- CREATION OF GLASSMORPHISM UI (LIXX EGG)
+-- =================================================================
 local CoreGui = game:GetService("CoreGui")
 if CoreGui:FindFirstChild("LixxEggUI") then CoreGui.LixxEggUI:Destroy() end
 
 local LixxEggUI = Instance.new("ScreenGui")
 LixxEggUI.Name = "LixxEggUI"
 LixxEggUI.Parent = CoreGui
-LixxEggUI.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
--- Open Button Logo "L"
-local LogoL = Instance.new("TextButton")
+-- Logo Floating "L"
+local LogoL = Instance.new("TextButton", LixxEggUI)
 LogoL.Name = "LogoL"
-LogoL.Parent = LixxEggUI
 LogoL.Size = UDim2.new(0, 45, 0, 45)
-LogoL.Position = UDim2.new(0.02, 0, 0.4, 0)
-LogoL.BackgroundColor3 = Color3.fromRGB(20, 20, 35)
-LogoL.BackgroundTransparency = 0.2
+LogoL.Position = UDim2.new(0.02, 0, 0.45, 0)
+LogoL.BackgroundColor3 = Color3.fromRGB(15, 20, 35)
+LogoL.BackgroundTransparency = 0.25
 LogoL.Text = "L"
 LogoL.TextColor3 = Color3.fromRGB(0, 230, 255)
-LogoL.TextSize = 24
+LogoL.TextSize = 22
 LogoL.Font = Enum.Font.FredokaOne
 LogoL.Draggable = true
+Instance.new("UICorner", LogoL).CornerRadius = UDim.new(0, 10)
+local lStroke = Instance.new("UIStroke", LogoL)
+lStroke.Color = Color3.fromRGB(0, 230, 255)
+lStroke.Thickness = 1.5
 
-local LogoCorner = Instance.new("UICorner", LogoL)
-LogoCorner.CornerRadius = UDim.new(0, 12)
-local LogoStroke = Instance.new("UIStroke", LogoL)
-LogoStroke.Color = Color3.fromRGB(0, 230, 255)
-LogoStroke.Thickness = 2
-
--- Main Frame (Glass Style)
-local MainFrame = Instance.new("Frame")
+-- Window Frame Utama
+local MainFrame = Instance.new("Frame", LixxEggUI)
 MainFrame.Name = "MainFrame"
-MainFrame.Parent = LixxEggUI
-MainFrame.Size = UDim2.new(0, 580, 0, 360)
+MainFrame.Size = UDim2.new(0, 560, 0, 350)
 MainFrame.Position = UDim2.new(0.3, 0, 0.25, 0)
-MainFrame.BackgroundColor3 = Color3.fromRGB(15, 18, 28)
-MainFrame.BackgroundTransparency = 0.25
+MainFrame.BackgroundColor3 = Color3.fromRGB(12, 15, 25)
+MainFrame.BackgroundTransparency = 0.2
 MainFrame.Active = true
 MainFrame.Draggable = true
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 14)
 
-local MainCorner = Instance.new("UICorner", MainFrame)
-MainCorner.CornerRadius = UDim.new(0, 16)
-local MainStroke = Instance.new("UIStroke", MainFrame)
-MainStroke.Color = Color3.fromRGB(255, 255, 255)
-MainStroke.Transparency = 0.7
-MainStroke.Thickness = 1.5
+local mStroke = Instance.new("UIStroke", MainFrame)
+mStroke.Color = Color3.fromRGB(255, 255, 255)
+mStroke.Transparency = 0.75
 
--- Header Title & Close Button "X"
+-- Top Header
 local Title = Instance.new("TextLabel", MainFrame)
 Title.Size = UDim2.new(0, 200, 0, 40)
-Title.Position = UDim2.new(0, 20, 0, 5)
+Title.Position = UDim2.new(0, 15, 0, 0)
 Title.Text = "LIXX EGG v1.0"
 Title.Font = Enum.Font.GothamBold
-Title.TextSize = 18
-Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.TextSize = 16
+Title.TextColor3 = Color3.fromRGB(0, 230, 255)
 Title.TextXAlignment = Enum.TextXAlignment.Left
 Title.BackgroundTransparency = 1
 
 local CloseBtn = Instance.new("TextButton", MainFrame)
-CloseBtn.Size = UDim2.new(0, 30, 0, 30)
-CloseBtn.Position = UDim2.new(1, -40, 0, 8)
+CloseBtn.Size = UDim2.new(0, 28, 0, 28)
+CloseBtn.Position = UDim2.new(1, -36, 0, 6)
 CloseBtn.Text = "X"
 CloseBtn.Font = Enum.Font.GothamBold
-CloseBtn.TextSize = 16
+CloseBtn.TextSize = 14
 CloseBtn.TextColor3 = Color3.fromRGB(255, 80, 80)
-CloseBtn.BackgroundColor3 = Color3.fromRGB(40, 20, 20)
-CloseBtn.BackgroundTransparency = 0.5
-local CloseCorner = Instance.new("UICorner", CloseBtn)
-CloseCorner.CornerRadius = UDim.new(0, 8)
+CloseBtn.BackgroundColor3 = Color3.fromRGB(40, 20, 25)
+CloseBtn.BackgroundTransparency = 0.3
+Instance.new("UICorner", CloseBtn).CornerRadius = UDim.new(0, 6)
 
-CloseBtn.MouseButton1Click:Connect(function()
-	MainFrame.Visible = false
-end)
+CloseBtn.MouseButton1Click:Connect(function() MainFrame.Visible = false end)
+LogoL.MouseButton1Click:Connect(function() MainFrame.Visible = not MainFrame.Visible end)
 
-LogoL.MouseButton1Click:Connect(function()
-	MainFrame.Visible = not MainFrame.Visible
-end)
-
--- Sidebar Navigation (5 Menus)
+-- Sidebar Menu Navigasi
 local Sidebar = Instance.new("Frame", MainFrame)
 Sidebar.Size = UDim2.new(0, 130, 1, -50)
-Sidebar.Position = UDim2.new(0, 10, 0, 45)
-Sidebar.BackgroundTransparency = 0.9
-Sidebar.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-
-local SidebarLayout = Instance.new("UIListLayout", Sidebar)
-SidebarLayout.Padding = UDim.new(0, 6)
+Sidebar.Position = UDim2.new(0, 10, 0, 42)
+Sidebar.BackgroundTransparency = 1
+local sLayout = Instance.new("UIListLayout", Sidebar) sLayout.Padding = UDim.new(0, 5)
 
 local Container = Instance.new("Frame", MainFrame)
-Container.Size = UDim2.new(1, -165, 1, -55)
-Container.Position = UDim2.new(0, 150, 0, 45)
+Container.Size = UDim2.new(1, -155, 1, -50)
+Container.Position = UDim2.new(0, 145, 0, 42)
 Container.BackgroundTransparency = 1
 
 local Pages = {}
 
-local function CreateTab(name)
+local function RegisterMenu(menuName)
 	local btn = Instance.new("TextButton", Sidebar)
-	btn.Size = UDim2.new(1, 0, 0, 35)
-	btn.Text = name
+	btn.Size = UDim2.new(1, 0, 0, 32)
+	btn.Text = menuName
 	btn.Font = Enum.Font.GothamMedium
-	btn.TextSize = 13
-	btn.TextColor3 = Color3.fromRGB(200, 200, 200)
-	btn.BackgroundColor3 = Color3.fromRGB(30, 35, 50)
+	btn.TextSize = 11
+	btn.TextColor3 = Color3.fromRGB(220, 220, 220)
+	btn.BackgroundColor3 = Color3.fromRGB(25, 30, 45)
 	btn.BackgroundTransparency = 0.4
-	local c = Instance.new("UICorner", btn)
-	c.CornerRadius = UDim.new(0, 8)
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
 
 	local page = Instance.new("ScrollingFrame", Container)
 	page.Size = UDim2.new(1, 0, 1, 0)
 	page.BackgroundTransparency = 1
 	page.Visible = false
 	page.CanvasSize = UDim2.new(0, 0, 2, 0)
-	page.ScrollBarThickness = 3
+	page.ScrollBarThickness = 2
+	local pLayout = Instance.new("UIListLayout", page) pLayout.Padding = UDim.new(0, 6)
 
-	local pLayout = Instance.new("UIListLayout", page)
-	pLayout.Padding = UDim.new(0, 8)
-
-	Pages[name] = page
+	Pages[menuName] = page
 
 	btn.MouseButton1Click:Connect(function()
 		for _, p in pairs(Pages) do p.Visible = false end
 		page.Visible = true
 	end)
-
 	return page
 end
 
--- Build 5 Tab Windows
-local TabAutoEgg = CreateTab("AUTO EGG")
-local TabPanel = CreateTab("PANEL")
-local TabHistory = CreateTab("HISTORY EGG")
-local TabDuel = CreateTab("DUEL PLAYER")
-local TabNotif = CreateTab("NOTIFICATION")
+-- Inisialisasi 5 Menu Utama
+local PageAuto = RegisterMenu("AUTO EGG")
+local PagePanel = RegisterMenu("PANEL")
+local PageHist = RegisterMenu("HISTORY EGG")
+local PageDuel = RegisterMenu("DUEL PLAYER")
+local PageNotif = RegisterMenu("NOTIFICATION")
 
 Pages["AUTO EGG"].Visible = true
 
--- Helper UI Components
-local function AddToggle(parent, title, defaultState, callback)
-	local frame = Instance.new("Frame", parent)
-	frame.Size = UDim2.new(1, -10, 0, 40)
-	frame.BackgroundColor3 = Color3.fromRGB(25, 30, 45)
-	frame.BackgroundTransparency = 0.3
-	local c = Instance.new("UICorner", frame) c.CornerRadius = UDim.new(0, 8)
+-- Helper Component UI Toggle
+local function AddToggleUI(parentPage, textTitle, defaultVal, onToggle)
+	local f = Instance.new("Frame", parentPage)
+	f.Size = UDim2.new(1, -8, 0, 38)
+	f.BackgroundColor3 = Color3.fromRGB(20, 25, 40)
+	f.BackgroundTransparency = 0.3
+	Instance.new("UICorner", f).CornerRadius = UDim.new(0, 6)
 
-	local lbl = Instance.new("TextLabel", frame)
-	lbl.Size = UDim2.new(0.7, 0, 1, 0)
-	lbl.Position = UDim2.new(0, 10, 0, 0)
-	lbl.Text = title
-	lbl.Font = Enum.Font.Gotham
-	lbl.TextSize = 13
-	lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
-	lbl.TextXAlignment = Enum.TextXAlignment.Left
-	lbl.BackgroundTransparency = 1
+	local t = Instance.new("TextLabel", f)
+	t.Size = UDim2.new(0.7, 0, 1, 0)
+	t.Position = UDim2.new(0, 8, 0, 0)
+	t.Text = textTitle
+	t.Font = Enum.Font.Gotham
+	t.TextSize = 11
+	t.TextColor3 = Color3.fromRGB(255, 255, 255)
+	t.TextXAlignment = Enum.TextXAlignment.Left
+	t.BackgroundTransparency = 1
 
-	local tBtn = Instance.new("TextButton", frame)
-	tBtn.Size = UDim2.new(0, 60, 0, 26)
-	tBtn.Position = UDim2.new(1, -70, 0.5, -13)
-	tBtn.Text = defaultState and "ON" or "OFF"
-	tBtn.Font = Enum.Font.GothamBold
-	tBtn.TextSize = 12
-	tBtn.TextColor3 = defaultState and Color3.fromRGB(0, 255, 150) or Color3.fromRGB(255, 80, 80)
-	tBtn.BackgroundColor3 = Color3.fromRGB(15, 20, 30)
-	local tc = Instance.new("UICorner", tBtn) tc.CornerRadius = UDim.new(0, 6)
+	local btn = Instance.new("TextButton", f)
+	btn.Size = UDim2.new(0, 55, 0, 24)
+	btn.Position = UDim2.new(1, -63, 0.5, -12)
+	btn.Text = defaultVal and "ON" or "OFF"
+	btn.Font = Enum.Font.GothamBold
+	btn.TextSize = 11
+	btn.TextColor3 = defaultVal and Color3.fromRGB(0, 255, 140) or Color3.fromRGB(255, 70, 70)
+	btn.BackgroundColor3 = Color3.fromRGB(10, 15, 25)
+	Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 5)
 
-	local state = defaultState
-	tBtn.MouseButton1Click:Connect(function()
+	local state = defaultVal
+	btn.MouseButton1Click:Connect(function()
 		state = not state
-		tBtn.Text = state and "ON" or "OFF"
-		tBtn.TextColor3 = state and Color3.fromRGB(0, 255, 150) or Color3.fromRGB(255, 80, 80)
-		callback(state)
+		btn.Text = state and "ON" or "OFF"
+		btn.TextColor3 = state and Color3.fromRGB(0, 255, 140) or Color3.fromRGB(255, 70, 70)
+		onToggle(state)
 	end)
 end
 
--- TAB 1: AUTO EGG FEATURES
-AddToggle(TabAutoEgg, "Steal On/Off (Divine > Eternal > Secret)", Config.AutoSteal, function(v)
-	Config.AutoSteal = v
-end)
-
-AddToggle(TabAutoEgg, "Speed Boost On/Off", Config.SpeedBoost, function(v)
+-- MENU 1: AUTO EGG
+AddToggleUI(PageAuto, "Steal On/Off (Divine > Eternal > Secret)", Config.AutoSteal, function(v) Config.AutoSteal = v end)
+AddToggleUI(PageAuto, "Speed Boost On/Off", Config.SpeedBoost, function(v)
 	Config.SpeedBoost = v
 	if not v and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
 		LocalPlayer.Character.Humanoid.WalkSpeed = 16
 	end
 end)
 
--- Speed Box
-local SpeedFrame = Instance.new("Frame", TabAutoEgg)
-SpeedFrame.Size = UDim2.new(1, -10, 0, 40)
-SpeedFrame.BackgroundColor3 = Color3.fromRGB(25, 30, 45)
-SpeedFrame.BackgroundTransparency = 0.3
-local sCorner = Instance.new("UICorner", SpeedFrame) sCorner.CornerRadius = UDim.new(0, 8)
+-- Speed Value Box
+local SpdBoxFrame = Instance.new("Frame", PageAuto)
+SpdBoxFrame.Size = UDim2.new(1, -8, 0, 38)
+SpdBoxFrame.BackgroundColor3 = Color3.fromRGB(20, 25, 40)
+SpdBoxFrame.BackgroundTransparency = 0.3
+Instance.new("UICorner", SpdBoxFrame).CornerRadius = UDim.new(0, 6)
 
-local sLbl = Instance.new("TextLabel", SpeedFrame)
-sLbl.Size = UDim2.new(0.5, 0, 1, 0)
-sLbl.Position = UDim2.new(0, 10, 0, 0)
-sLbl.Text = "Set Speed Value:"
-sLbl.Font = Enum.Font.Gotham
-sLbl.TextSize = 13
-sLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
-sLbl.TextXAlignment = Enum.TextXAlignment.Left
-sLbl.BackgroundTransparency = 1
+local spdLabel = Instance.new("TextLabel", SpdBoxFrame)
+spdLabel.Size = UDim2.new(0.5, 0, 1, 0)
+spdLabel.Position = UDim2.new(0, 8, 0, 0)
+spdLabel.Text = "Set Speed Boost:"
+spdLabel.Font = Enum.Font.Gotham
+spdLabel.TextSize = 11
+spdLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+spdLabel.TextXAlignment = Enum.TextXAlignment.Left
+spdLabel.BackgroundTransparency = 1
 
-local sBox = Instance.new("TextBox", SpeedFrame)
-sBox.Size = UDim2.new(0, 80, 0, 26)
-sBox.Position = UDim2.new(1, -90, 0.5, -13)
-sBox.Text = tostring(Config.SpeedValue)
-sBox.Font = Enum.Font.GothamBold
-sBox.TextSize = 12
-sBox.TextColor3 = Color3.fromRGB(255, 255, 255)
-sBox.BackgroundColor3 = Color3.fromRGB(15, 20, 30)
-local sBoxC = Instance.new("UICorner", sBox) sBoxC.CornerRadius = UDim.new(0, 6)
+local spdInput = Instance.new("TextBox", SpdBoxFrame)
+spdInput.Size = UDim2.new(0, 75, 0, 24)
+spdInput.Position = UDim2.new(1, -83, 0.5, -12)
+spdInput.Text = tostring(Config.SpeedValue)
+spdInput.Font = Enum.Font.GothamBold
+spdInput.TextSize = 11
+spdInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+spdInput.BackgroundColor3 = Color3.fromRGB(10, 15, 25)
+Instance.new("UICorner", spdInput).CornerRadius = UDim.new(0, 5)
 
-sBox.FocusLost:Connect(function()
-	local val = tonumber(sBox.Text)
-	if val then Config.SpeedValue = val end
+spdInput.FocusLost:Connect(function()
+	local num = tonumber(spdInput.Text)
+	if num then Config.SpeedValue = num end
 end)
 
--- TAB 2: PANEL (Manual Steal & Refresh Server)
-local RefreshBtn = Instance.new("TextButton", TabPanel)
-RefreshBtn.Size = UDim2.new(1, -10, 0, 35)
-RefreshBtn.Text = "🔄 Refresh Eggs Display"
-RefreshBtn.Font = Enum.Font.GothamBold
-RefreshBtn.TextSize = 12
-RefreshBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-RefreshBtn.BackgroundColor3 = Color3.fromRGB(40, 90, 160)
-local rCorner = Instance.new("UICorner", RefreshBtn) rCorner.CornerRadius = UDim.new(0, 8)
+-- MENU 2: PANEL (Steal Manual per Egg)
+local RefreshPanelBtn = Instance.new("TextButton", PagePanel)
+RefreshPanelBtn.Size = UDim2.new(1, -8, 0, 32)
+RefreshPanelBtn.Text = "🔄 Refresh Eggs Server"
+RefreshPanelBtn.Font = Enum.Font.GothamBold
+RefreshPanelBtn.TextSize = 11
+RefreshPanelBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+RefreshPanelBtn.BackgroundColor3 = Color3.fromRGB(30, 80, 150)
+Instance.new("UICorner", RefreshPanelBtn).CornerRadius = UDim.new(0, 6)
 
-local PanelList = Instance.new("Frame", TabPanel)
-PanelList.Size = UDim2.new(1, -10, 1, -45)
-PanelList.BackgroundTransparency = 1
-local pListLayout = Instance.new("UIListLayout", PanelList) pListLayout.Padding = UDim.new(0, 6)
+local PanelScroll = Instance.new("Frame", PagePanel)
+PanelScroll.Size = UDim2.new(1, -8, 1, -40)
+PanelScroll.BackgroundTransparency = 1
+local pScrollLayout = Instance.new("UIListLayout", PanelScroll) pScrollLayout.Padding = UDim.new(0, 5)
 
-local function PopulatePanel()
-	for _, child in ipairs(PanelList:GetChildren()) do
+local function PopulateEggPanel()
+	for _, child in ipairs(PanelScroll:GetChildren()) do
 		if child:IsA("Frame") then child:Destroy() end
 	end
 
-	local eggs = GetEggsInWorkspace()
+	local eggs = GetWorldEggs()
 	table.sort(eggs, function(a, b)
-		return GetRarityWeight(a.Rarity) > GetRarityWeight(b.Rarity)
+		return GetRarityPriority(a.Rarity) > GetRarityPriority(b.Rarity)
 	end)
 
 	for _, item in ipairs(eggs) do
-		local f = Instance.new("Frame", PanelList)
-		f.Size = UDim2.new(1, 0, 0, 45)
-		f.BackgroundColor3 = Color3.fromRGB(25, 30, 45)
-		f.BackgroundTransparency = 0.3
-		local fc = Instance.new("UICorner", f) fc.CornerRadius = UDim.new(0, 8)
+		local row = Instance.new("Frame", PanelScroll)
+		row.Size = UDim2.new(1, 0, 0, 42)
+		row.BackgroundColor3 = Color3.fromRGB(20, 25, 40)
+		row.BackgroundTransparency = 0.3
+		Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
 
-		local img = Instance.new("ImageLabel", f)
-		img.Size = UDim2.new(0, 35, 0, 35)
-		img.Position = UDim2.new(0, 5, 0.5, -17)
-		img.Image = "rbxassetid://6031075931" -- Placeholder Icon Mini Telur
-		img.BackgroundTransparency = 1
+		local nameLbl = Instance.new("TextLabel", row)
+		nameLbl.Size = UDim2.new(0.65, 0, 1, 0)
+		nameLbl.Position = UDim2.new(0, 8, 0, 0)
+		nameLbl.Text = item.Name .. " (" .. item.Rarity .. ")"
+		nameLbl.Font = Enum.Font.Gotham
+		nameLbl.TextSize = 11
+		nameLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+		nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+		nameLbl.BackgroundTransparency = 1
 
-		local txt = Instance.new("TextLabel", f)
-		txt.Size = UDim2.new(0.5, 0, 1, 0)
-		txt.Position = UDim2.new(0, 48, 0, 0)
-		txt.Text = item.Name .. " [" .. item.Rarity .. "]"
-		txt.Font = Enum.Font.Gotham
-		txt.TextSize = 11
-		txt.TextColor3 = Color3.fromRGB(255, 255, 255)
-		txt.TextXAlignment = Enum.TextXAlignment.Left
-		txt.BackgroundTransparency = 1
-
-		local stlBtn = Instance.new("TextButton", f)
-		stlBtn.Size = UDim2.new(0, 65, 0, 26)
-		stlBtn.Position = UDim2.new(1, -75, 0.5, -13)
+		local stlBtn = Instance.new("TextButton", row)
+		stlBtn.Size = UDim2.new(0, 60, 0, 24)
+		stlBtn.Position = UDim2.new(1, -68, 0.5, -12)
 		stlBtn.Text = "STEAL"
 		stlBtn.Font = Enum.Font.GothamBold
-		stlBtn.TextSize = 11
+		stlBtn.TextSize = 10
 		stlBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-		stlBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 100)
-		local stlC = Instance.new("UICorner", stlBtn) stlC.CornerRadius = UDim.new(0, 6)
+		stlBtn.BackgroundColor3 = Color3.fromRGB(0, 170, 90)
+		Instance.new("UICorner", stlBtn).CornerRadius = UDim.new(0, 5)
 
 		stlBtn.MouseButton1Click:Connect(function()
-			ExecuteStealSequence(item.Instance)
+			task.spawn(function()
+				DoStealEgg(item)
+			end)
 		end)
 	end
 end
 
-RefreshBtn.MouseButton1Click:Connect(PopulatePanel)
+RefreshPanelBtn.MouseButton1Click:Connect(PopulateEggPanel)
 
--- TAB 3: HISTORY EGG
-local DelHistBtn = Instance.new("TextButton", TabHistory)
-DelHistBtn.Size = UDim2.new(1, -10, 0, 35)
-DelHistBtn.Text = "🗑️ Delete History"
+-- MENU 3: HISTORY EGG
+local DelHistBtn = Instance.new("TextButton", PageHist)
+DelHistBtn.Size = UDim2.new(1, -8, 0, 32)
+DelHistBtn.Text = "🗑️ Clear History"
 DelHistBtn.Font = Enum.Font.GothamBold
-DelHistBtn.TextSize = 12
+DelHistBtn.TextSize = 11
 DelHistBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-DelHistBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
-local dhCorner = Instance.new("UICorner", DelHistBtn) dhCorner.CornerRadius = UDim.new(0, 8)
+DelHistBtn.BackgroundColor3 = Color3.fromRGB(160, 40, 40)
+Instance.new("UICorner", DelHistBtn).CornerRadius = UDim.new(0, 6)
 
-local HistList = Instance.new("Frame", TabHistory)
-HistList.Size = UDim2.new(1, -10, 1, -45)
-HistList.BackgroundTransparency = 1
-local hLayout = Instance.new("UIListLayout", HistList) hLayout.Padding = UDim.new(0, 4)
+local HistHolder = Instance.new("Frame", PageHist)
+HistHolder.Size = UDim2.new(1, -8, 1, -40)
+HistHolder.BackgroundTransparency = 1
+local hHolderLayout = Instance.new("UIListLayout", HistHolder) hHolderLayout.Padding = UDim.new(0, 4)
 
-local function UpdateHistoryUI()
-	for _, child in ipairs(HistList:GetChildren()) do
+local function RefreshHistoryList()
+	for _, child in ipairs(HistHolder:GetChildren()) do
 		if child:IsA("Frame") then child:Destroy() end
 	end
 	for _, entry in ipairs(Config.History) do
-		local f = Instance.new("Frame", HistList)
-		f.Size = UDim2.new(1, 0, 0, 30)
-		f.BackgroundColor3 = Color3.fromRGB(20, 25, 35)
+		local f = Instance.new("Frame", HistHolder)
+		f.Size = UDim2.new(1, 0, 0, 28)
+		f.BackgroundColor3 = Color3.fromRGB(18, 22, 32)
 		f.BackgroundTransparency = 0.4
-		local c = Instance.new("UICorner", f) c.CornerRadius = UDim.new(0, 6)
+		Instance.new("UICorner", f).CornerRadius = UDim.new(0, 5)
 
-		local lbl = Instance.new("TextLabel", f)
-		lbl.Size = UDim2.new(1, -10, 1, 0)
-		lbl.Position = UDim2.new(0, 10, 0, 0)
-		lbl.Text = "[" .. entry.Time .. "] Stolen: " .. entry.Name .. " (" .. entry.Rarity .. ")"
-		lbl.Font = Enum.Font.Gotham
-		lbl.TextSize = 11
-		lbl.TextColor3 = Color3.fromRGB(220, 220, 220)
-		lbl.TextXAlignment = Enum.TextXAlignment.Left
-		lbl.BackgroundTransparency = 1
+		local txt = Instance.new("TextLabel", f)
+		txt.Size = UDim2.new(1, -10, 1, 0)
+		txt.Position = UDim2.new(0, 8, 0, 0)
+		txt.Text = "[" .. entry.Time .. "] " .. entry.Name .. " - " .. entry.Rarity
+		txt.Font = Enum.Font.Gotham
+		txt.TextSize = 10
+		txt.TextColor3 = Color3.fromRGB(200, 200, 200)
+		txt.TextXAlignment = Enum.TextXAlignment.Left
+		txt.BackgroundTransparency = 1
 	end
 end
 
 DelHistBtn.MouseButton1Click:Connect(function()
 	Config.History = {}
-	UpdateHistoryUI()
+	RefreshHistoryList()
 end)
 
--- TAB 4: DUEL PLAYER
-AddToggle(TabDuel, "Duel Player On/Off", Config.DuelMode, function(v)
-	Config.DuelMode = v
-end)
+-- MENU 4: DUEL PLAYER
+AddToggleUI(PageDuel, "Duel Player On/Off", Config.DuelMode, function(v) Config.DuelMode = v end)
 
-local PlayerListFrame = Instance.new("Frame", TabDuel)
-PlayerListFrame.Size = UDim2.new(1, -10, 1, -50)
-PlayerListFrame.BackgroundTransparency = 1
-local plLayout = Instance.new("UIListLayout", PlayerListFrame) plLayout.Padding = UDim.new(0, 6)
+local DuelHolder = Instance.new("Frame", PageDuel)
+DuelHolder.Size = UDim2.new(1, -8, 1, -45)
+DuelHolder.BackgroundTransparency = 1
+local dHolderLayout = Instance.new("UIListLayout", DuelHolder) dHolderLayout.Padding = UDim.new(0, 5)
 
-local function UpdatePlayerList()
-	for _, child in ipairs(PlayerListFrame:GetChildren()) do
+local function RenderDuelPlayers()
+	for _, child in ipairs(DuelHolder:GetChildren()) do
 		if child:IsA("Frame") then child:Destroy() end
 	end
 
 	for _, p in ipairs(Players:GetPlayers()) do
 		if p ~= LocalPlayer then
-			local f = Instance.new("Frame", PlayerListFrame)
-			f.Size = UDim2.new(1, 0, 0, 40)
-			f.BackgroundColor3 = Color3.fromRGB(25, 30, 45)
+			local f = Instance.new("Frame", DuelHolder)
+			f.Size = UDim2.new(1, 0, 0, 38)
+			f.BackgroundColor3 = Color3.fromRGB(20, 25, 40)
 			f.BackgroundTransparency = 0.3
-			local c = Instance.new("UICorner", f) c.CornerRadius = UDim.new(0, 8)
+			Instance.new("UICorner", f).CornerRadius = UDim.new(0, 6)
 
-			local lbl = Instance.new("TextLabel", f)
-			lbl.Size = UDim2.new(0.6, 0, 1, 0)
-			lbl.Position = UDim2.new(0, 10, 0, 0)
-			lbl.Text = p.DisplayName .. " (@" .. p.Name .. ")"
-			lbl.Font = Enum.Font.Gotham
-			lbl.TextSize = 12
-			lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
-			lbl.TextXAlignment = Enum.TextXAlignment.Left
-			lbl.BackgroundTransparency = 1
+			local pName = Instance.new("TextLabel", f)
+			pName.Size = UDim2.new(0.6, 0, 1, 0)
+			pName.Position = UDim2.new(0, 8, 0, 0)
+			pName.Text = p.DisplayName
+			pName.Font = Enum.Font.Gotham
+			pName.TextSize = 11
+			pName.TextColor3 = Color3.fromRGB(255, 255, 255)
+			pName.TextXAlignment = Enum.TextXAlignment.Left
+			pName.BackgroundTransparency = 1
 
-			local hasEgg = p.Character and (p.Character:FindFirstChild("CarriedEgg") or p.Character:FindFirstChild("Egg"))
+			local hasEgg = p.Character and (p.Character:FindFirstChild("CarriedEgg") or p.Character:FindFirstChild("Egg") or p.Character:FindFirstChildWhichPart("Egg"))
 
-			local sBtn = Instance.new("TextButton", f)
-			sBtn.Size = UDim2.new(0, 65, 0, 26)
-			sBtn.Position = UDim2.new(1, -75, 0.5, -13)
-			sBtn.Text = "Steal"
-			sBtn.Font = Enum.Font.GothamBold
-			sBtn.TextSize = 11
-			sBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-			sBtn.BackgroundColor3 = hasEgg and Color3.fromRGB(0, 200, 100) or Color3.fromRGB(200, 50, 50)
-			local sc = Instance.new("UICorner", sBtn) sc.CornerRadius = UDim.new(0, 6)
+			local stBtn = Instance.new("TextButton", f)
+			stBtn.Size = UDim2.new(0, 60, 0, 24)
+			stBtn.Position = UDim2.new(1, -68, 0.5, -12)
+			stBtn.Text = "STEAL"
+			stBtn.Font = Enum.Font.GothamBold
+			stBtn.TextSize = 10
+			stBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+			stBtn.BackgroundColor3 = hasEgg and Color3.fromRGB(0, 190, 90) or Color3.fromRGB(200, 50, 50)
+			Instance.new("UICorner", stBtn).CornerRadius = UDim.new(0, 5)
 
-			sBtn.MouseButton1Click:Connect(function()
+			stBtn.MouseButton1Click:Connect(function()
 				if hasEgg and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
 					local myChar = LocalPlayer.Character
 					if myChar and myChar:FindFirstChild("HumanoidRootPart") then
-						-- Lengket ke Player & Pukul Pentungan
-						myChar.HumanoidRootPart.CFrame = p.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, 2)
-						local tool = myChar:FindFirstChildOfClass("Tool") or LocalPlayer.Backpack:FindFirstChildOfClass("Tool")
-						if tool then
-							tool.Parent = myChar
-							tool:Activate()
+						myChar.HumanoidRootPart.CFrame = p.Character.HumanoidRootPart.CFrame * CFrame.new(0, 0, 1.5)
+						local weapon = myChar:FindFirstChildOfClass("Tool") or LocalPlayer.Backpack:FindFirstChildOfClass("Tool")
+						if weapon then
+							weapon.Parent = myChar
+							weapon:Activate()
 						end
 					end
 				end
@@ -505,68 +516,63 @@ local function UpdatePlayerList()
 	end
 end
 
--- TAB 5: NOTIFICATION TELEGRAM CONFIG
-AddToggle(TabNotif, "Telegram Notifier On/Off", Config.NotifEnabled, function(v)
-	Config.NotifEnabled = v
-end)
+-- MENU 5: NOTIFICATION TELEGRAM
+AddToggleUI(PageNotif, "Telegram Notifier On/Off", Config.NotifEnabled, function(v) Config.NotifEnabled = v end)
 
-local function AddInput(parent, placeholder, defaultText, callback)
-	local box = Instance.new("TextBox", parent)
-	box.Size = UDim2.new(1, -10, 0, 35)
-	box.PlaceholderText = placeholder
-	box.Text = defaultText
-	box.Font = Enum.Font.Gotham
-	box.TextSize = 12
-	box.TextColor3 = Color3.fromRGB(255, 255, 255)
-	box.BackgroundColor3 = Color3.fromRGB(25, 30, 45)
-	box.BackgroundTransparency = 0.3
-	local c = Instance.new("UICorner", box) c.CornerRadius = UDim.new(0, 8)
-
-	box.FocusLost:Connect(function()
-		callback(box.Text)
-	end)
+local function MakeInputBox(parent, placeholder, defText, onUpdate)
+	local b = Instance.new("TextBox", parent)
+	b.Size = UDim2.new(1, -8, 0, 34)
+	b.PlaceholderText = placeholder
+	b.Text = defText
+	b.Font = Enum.Font.Gotham
+	b.TextSize = 11
+	b.TextColor3 = Color3.fromRGB(255, 255, 255)
+	b.BackgroundColor3 = Color3.fromRGB(20, 25, 40)
+	b.BackgroundTransparency = 0.3
+	Instance.new("UICorner", b).CornerRadius = UDim.new(0, 6)
+	b.FocusLost:Connect(function() onUpdate(b.Text) end)
 end
 
-AddInput(TabNotif, "Bot Token Telegram...", Config.TelegramToken, function(t) Config.TelegramToken = t end)
-AddInput(TabNotif, "ID Penerima (Chat ID)...", Config.TelegramChatID, function(t) Config.TelegramChatID = t end)
+MakeInputBox(PageNotif, "Isi Bot Token Telegram...", Config.TelegramToken, function(t) Config.TelegramToken = t end)
+MakeInputBox(PageNotif, "Isi ID Chat Penerima...", Config.TelegramChatID, function(t) Config.TelegramChatID = t end)
 
--- MAIN BACKGROUND LOOPS
+-- LOOPS SYSTEM UTAMA
 RunService.Stepped:Connect(function()
 	if Config.SpeedBoost and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
 		LocalPlayer.Character.Humanoid.WalkSpeed = Config.SpeedValue
 	end
 end)
 
--- Main Loop Logic: Priority Auto Steal
+-- Loop Auto Steal (Divine > Eternal > Secret)
 task.spawn(function()
-	while task.wait(1) do
-		if Config.AutoSteal then
-			local eggs = GetEggsInWorkspace()
-			local bestEgg = nil
-			local highestWeight = -1
+	while task.wait(0.5) do
+		if Config.AutoSteal and not IsStealing then
+			local eggs = GetWorldEggs()
+			local target = nil
+			local maxPriority = -1
 
-			for _, egg in ipairs(eggs) do
-				local w = GetRarityWeight(egg.Rarity)
-				if w > 0 and w > highestWeight then
-					highestWeight = w
-					bestEgg = egg.Instance
+			for _, e in ipairs(eggs) do
+				local priority = GetRarityPriority(e.Rarity)
+				if priority > 0 and priority > maxPriority then
+					maxPriority = priority
+					target = e
 				end
 			end
 
-			if bestEgg then
-				ExecuteStealSequence(bestEgg)
-				UpdateHistoryUI()
+			if target then
+				DoStealEgg(target)
+				RefreshHistoryList()
 			end
 		end
 	end
 end)
 
--- Periodically update Panel & Duel lists
+-- Background Refresh UI Panel & Duel List
 task.spawn(function()
-	while task.wait(3) do
+	while task.wait(2) do
 		if MainFrame.Visible then
-			PopulatePanel()
-			UpdatePlayerList()
+			if Pages["PANEL"].Visible then PopulateEggPanel() end
+			if Pages["DUEL PLAYER"].Visible then RenderDuelPlayers() end
 		end
 	end
 end)
