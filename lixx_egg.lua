@@ -1,5 +1,5 @@
 -- =================================================================
--- SCRIPT NAME: LIXX EGG
+-- SCRIPT NAME: LIXX EGG (BAC SAFE / BYPASS VERSION)
 -- GAME: Steal and Egg
 -- THEME: Minecraft Style (Green Accent)
 -- =================================================================
@@ -33,7 +33,29 @@ local RarityPriority = {
     ["Secret"] = 1
 }
 
--- Helper Functions
+-- Safe Smooth Movement (Pengganti Teleport Instan agar BAC tidak Kick)
+local function SafeMoveTo(targetPosition, speed)
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
+    local hrp = LocalPlayer.Character.HumanoidRootPart
+    local distance = (targetPosition - hrp.Position).Magnitude
+    local timeToTravel = math.clamp(distance / (speed or 30), 0.3, 5) -- Batas kecepatan aman
+
+    local tweenInfo = TweenInfo.new(timeToTravel, Enum.EasingStyle.Linear, Enum.EasingDirection.Out)
+    local tween = TweenService:Create(hrp, tweenInfo, {CFrame = CFrame.new(targetPosition)})
+    
+    -- Temporarily disable collision to prevent physics velocity detection
+    for _, part in pairs(LocalPlayer.Character:GetChildren()) do
+        if part:IsA("BasePart") then part.CanCollide = false end
+    end
+    
+    tween:Play()
+    tween.Completed:Wait()
+
+    for _, part in pairs(LocalPlayer.Character:GetChildren()) do
+        if part:IsA("BasePart") then part.CanCollide = true end
+    end
+end
+
 local function GetBasePosition()
     if workspace:FindFirstChild("Bases") then
         for _, base in pairs(workspace.Bases:GetChildren()) do
@@ -49,28 +71,28 @@ local function GetForestPosition()
     if workspace:FindFirstChild("Forest") then
         return workspace.Forest:GetPivot().Position
     end
-    return Vector3.new(100, 10, 100) -- Fallback position
+    return Vector3.new(100, 10, 100)
 end
 
-local function InstantStealSequence(eggTarget)
-    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return end
-    local hrp = LocalPlayer.Character.HumanoidRootPart
+-- Safe Steal Sequence (BAC Safe)
+local function SafeStealSequence(eggTarget)
+    if not eggTarget or not eggTarget:IsDescendantOf(workspace) then return end
+    
+    -- Smooth Walk/Fly to Egg
+    SafeMoveTo(eggTarget:GetPivot().Position, Config.WalkSpeedValue)
+    task.wait(0.2)
 
-    -- Run to Egg using current walkspeed
-    local targetPos = eggTarget:GetPivot().Position
-    hrp.CFrame = CFrame.new(targetPos)
-    task.wait(0.1)
-
-    -- Interaction trigger (Fire Touch / Proximity)
-    if eggTarget:FindFirstChildOfClass("ProximityPrompt") then
-        fireproximityprompt(eggTarget:FindFirstChildOfClass("ProximityPrompt"))
+    -- Safe Trigger Interaction
+    local prompt = eggTarget:FindFirstChildOfClass("ProximityPrompt") or eggTarget:FindFirstChild("ProximityPrompt", true)
+    if prompt then
+        fireproximityprompt(prompt)
     end
+    task.wait(0.3)
 
-    -- Teleport sequence: Forest (2s wait) -> Base
-    task.wait(0.1)
-    hrp.CFrame = CFrame.new(GetForestPosition())
+    -- Smooth Move to Forest -> Wait 2s -> Smooth Move to Base
+    SafeMoveTo(GetForestPosition(), 40)
     task.wait(2)
-    hrp.CFrame = CFrame.new(GetBasePosition())
+    SafeMoveTo(GetBasePosition(), 40)
 end
 
 local function SendTelegramNotification(eggName, rarity)
@@ -91,11 +113,9 @@ local function SendTelegramNotification(eggName, rarity)
     end
 end
 
--- =================================================================
--- UI CREATION (Minecraft Green Theme)
--- =================================================================
+-- UI CREATION
 local Window = Fluent:CreateWindow({
-    Title = "LIXX EGG",
+    Title = "LIXX EGG (BAC SAFE)",
     SubTitle = "by LIXX",
     TabWidth = 160,
     Size = UDim2.fromOffset(580, 460),
@@ -104,10 +124,8 @@ local Window = Fluent:CreateWindow({
     MinimizeKey = Enum.KeyCode.LeftControl
 })
 
--- Custom Minecraft Green Style Modifications
 Window.Root.BackgroundColor3 = Color3.fromRGB(20, 35, 20)
 
--- Navigation Tabs (5 Menus)
 local Tabs = {
     AutoEgg = Window:AddTab({ Title = "Auto Egg", Icon = "egg" }),
     HistoryEgg = Window:AddTab({ Title = "History Egg", Icon = "history" }),
@@ -116,19 +134,15 @@ local Tabs = {
     Settings = Window:AddTab({ Title = "Settings", Icon = "settings" })
 }
 
--- =================================================================
--- 1. MENU: AUTO EGG
--- =================================================================
-
--- Fitur 1: Steal On/Off (Priority: Divine > Eternal > Secret)
+-- 1. AUTO EGG
 Tabs.AutoEgg:AddToggle("AutoStealToggle", {
-    Title = "Steal On/Off",
+    Title = "Steal On/Off (BAC Safe)",
     Default = false,
     Callback = function(Value)
         Config.AutoSteal = Value
         task.spawn(function()
             while Config.AutoSteal do
-                task.wait(0.5)
+                task.wait(1) -- Delay aman agar tidak terdeteksi spamming
                 local bestEgg = nil
                 local highestRank = 0
 
@@ -144,7 +158,7 @@ Tabs.AutoEgg:AddToggle("AutoStealToggle", {
                 end
 
                 if bestEgg then
-                    InstantStealSequence(bestEgg)
+                    SafeStealSequence(bestEgg)
                     table.insert(Config.EggHistory, {Name = bestEgg.Name, Time = os.date("%X")})
                     SendTelegramNotification(bestEgg.Name, bestEgg:GetAttribute("Rarity") or "Unknown")
                 end
@@ -153,7 +167,6 @@ Tabs.AutoEgg:AddToggle("AutoStealToggle", {
     end
 })
 
--- Fitur 2: Panel Visual (Grid UI Rarity)
 Tabs.AutoEgg:AddButton({
     Title = "Buka Panel Telur",
     Description = "Tampilkan UI Telur & Isi Rarity",
@@ -174,7 +187,6 @@ Tabs.AutoEgg:AddButton({
         Title.TextColor3 = Color3.fromRGB(255, 255, 255)
         Title.BackgroundColor3 = Color3.fromRGB(20, 40, 20)
 
-        -- Tombol [X] Tutup Panel
         local CloseBtn = Instance.new("TextButton", MainFrame)
         CloseBtn.Size = UDim2.fromOffset(30, 30)
         CloseBtn.Position = UDim2.new(1, -30, 0, 0)
@@ -193,7 +205,6 @@ Tabs.AutoEgg:AddButton({
         local Layout = Instance.new("UIListLayout", Scroll)
         Layout.SortOrder = Enum.SortOrder.LayoutOrder
 
-        -- Render Eggs sorted by Rarity
         if workspace:FindFirstChild("Eggs") then
             local eggList = workspace.Eggs:GetChildren()
             table.sort(eggList, function(a, b)
@@ -216,19 +227,19 @@ Tabs.AutoEgg:AddButton({
                 StealBtn.Text = "STEAL"
                 StealBtn.BackgroundColor3 = Color3.fromRGB(60, 140, 60)
                 StealBtn.MouseButton1Click:Connect(function()
-                    InstantStealSequence(egg)
+                    SafeStealSequence(egg)
                 end)
             end
         end
     end
 })
 
--- Fitur 3: Speed Boost + Slider + Toggle On/Off
+-- Speed Boost dibatasi max 45 agar tidak memicu BAC
 local SpeedSlider = Tabs.AutoEgg:AddSlider("SpeedSlider", {
-    Title = "Speed Boost Value",
+    Title = "Speed Boost Value (Max 45 untuk BAC Safe)",
     Min = 16,
-    Max = 200,
-    Default = 50,
+    Max = 45,
+    Default = 30,
     Rounding = 0,
     Callback = function(Value)
         Config.WalkSpeedValue = Value
@@ -249,9 +260,7 @@ Tabs.AutoEgg:AddToggle("SpeedBoostToggle", {
     end
 })
 
--- =================================================================
--- 2. MENU: HISTORY EGG
--- =================================================================
+-- 2. HISTORY EGG
 local HistoryParagraph = Tabs.HistoryEgg:AddParagraph({
     Title = "Catatan Pengambilan Telur",
     Content = "Belum ada history."
@@ -276,90 +285,66 @@ Tabs.HistoryEgg:AddButton({
     end
 })
 
--- =================================================================
--- 3. MENU: DUEL PLAYER
--- =================================================================
-local PlayerListSection = Tabs.DuelPlayer:AddSection("Daftar Player Server")
-
-local function RefreshDuelPanel()
-    for _, targetPlayer in pairs(Players:GetPlayers()) do
-        if targetPlayer ~= LocalPlayer then
-            local hasEgg = targetPlayer.Character and targetPlayer.Character:FindFirstChild("CarriedEgg") ~= nil
-            local btnColor = hasEgg and "[HIJAU - BAWA EGG]" or "[MERAH - NO EGG]"
-            
-            Tabs.DuelPlayer:AddButton({
-                Title = targetPlayer.Name .. " " .. btnColor,
-                Callback = function()
-                    if targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
-                        local hrp = LocalPlayer.Character.HumanoidRootPart
-                        -- Sticky teleport to player
-                        hrp.CFrame = targetPlayer.Character.HumanoidRootPart.CFrame * CFrame.new(0,0,2)
-                        
-                        -- Equip Wooden Club & Attack
-                        local club = LocalPlayer.Backpack:FindFirstChild("WoodenClub") or LocalPlayer.Character:FindFirstChild("WoodenClub")
-                        if club then
-                            club.Parent = LocalPlayer.Character
-                            club:Activate()
-                        end
-                        
-                        -- Auto pickup egg when dropped
-                        task.wait(1)
-                        local droppedEgg = workspace:FindFirstChild("DroppedEgg")
-                        if droppedEgg then
-                            InstantStealSequence(droppedEgg)
-                        end
-                    end
-                end
-            })
-        end
-    end
-end
-
+-- 3. DUEL PLAYER
 Tabs.DuelPlayer:AddButton({
     Title = "Refresh Player List",
     Callback = function()
-        RefreshDuelPanel()
+        for _, targetPlayer in pairs(Players:GetPlayers()) do
+            if targetPlayer ~= LocalPlayer then
+                local hasEgg = targetPlayer.Character and targetPlayer.Character:FindFirstChild("CarriedEgg") ~= nil
+                local btnColor = hasEgg and "[HIJAU - BAWA EGG]" or "[MERAH - NO EGG]"
+                
+                Tabs.DuelPlayer:AddButton({
+                    Title = targetPlayer.Name .. " " .. btnColor,
+                    Callback = function()
+                        if targetPlayer.Character and targetPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                            SafeMoveTo(targetPlayer.Character.HumanoidRootPart.Position, Config.WalkSpeedValue)
+                            
+                            local club = LocalPlayer.Backpack:FindFirstChild("WoodenClub") or LocalPlayer.Character:FindFirstChild("WoodenClub")
+                            if club then
+                                club.Parent = LocalPlayer.Character
+                                club:Activate()
+                            end
+                            
+                            task.wait(1)
+                            local droppedEgg = workspace:FindFirstChild("DroppedEgg")
+                            if droppedEgg then
+                                SafeStealSequence(droppedEgg)
+                            end
+                        end
+                    end
+                })
+            end
+        end
     end
 })
 
--- =================================================================
--- 4. MENU: NOTIFIKASI TELEGRAM
--- =================================================================
+-- 4. TELEGRAM NOTIFICATION
 Tabs.Notification:AddToggle("NotifToggle", {
     Title = "Telegram Notification On/Off",
     Default = false,
-    Callback = function(Value)
-        Config.TelegramNotif = Value
-    end
+    Callback = function(Value) Config.TelegramNotif = Value end
 })
 
 Tabs.Notification:AddInput("BotTokenInput", {
     Title = "Bot Token Telegram",
     Default = "",
     Placeholder = "Masukkan Token Bot...",
-    Callback = function(Value)
-        Config.BotToken = Value
-    end
+    Callback = function(Value) Config.BotToken = Value end
 })
 
 Tabs.Notification:AddInput("ChatIDInput", {
     Title = "ID Penerima (Chat ID)",
     Default = "",
     Placeholder = "Masukkan Chat ID...",
-    Callback = function(Value)
-        Config.ChatID = Value
-    end
+    Callback = function(Value) Config.ChatID = Value end
 })
 
--- =================================================================
--- 5. SETTINGS & INTERFACE MANAGER
--- =================================================================
+-- 5. SETTINGS
 InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 
--- =================================================================
 -- LOGO TOGGLE [L] UI
--- =================================================================
 local ToggleGui = Instance.new("ScreenGui", game.CoreGui)
 ToggleGui.Name = "LIXX_Toggle"
 
