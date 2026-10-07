@@ -1,197 +1,98 @@
--- =================================================================
--- LIXX EGG FIX ENGINE - ROBLOX STEAL AN EGG
--- =================================================================
-
 local Players = game:GetService("Players")
-local TweenService = game:GetService("TweenService")
-local Workspace = game:GetService("Workspace")
-local RunService = game:GetService("RunService")
-local LocalPlayer = Players.LocalPlayer
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
 
-local IsStealing = false
+-- Bikin ScreenGui Utama
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "StealEggGui"
+screenGui.ResetOnSpawn = false
+screenGui.Parent = playerGui
 
--- 1. FUNGSI ANALISA SEBAGAI DETEKSI TELUR MAP
-local function ScanMapEggs()
-	local detectedEggs = {}
-	
-	-- Scan seluruh ProximityPrompt aktif di map
-	for _, prompt in ipairs(Workspace:GetDescendants()) do
-		if prompt:IsA("ProximityPrompt") then
-			local parent = prompt.Parent
-			local eggModel = parent
-			
-			-- Cari model utama telur
-			while eggModel and not eggModel:IsA("Model") and eggModel ~= Workspace do
-				eggModel = eggModel.Parent
-			end
+-- 1. FRAME / PANEL UI UTAMA
+local mainFrame = Instance.new("Frame")
+mainFrame.Name = "MainFrame"
+mainFrame.Size = UDim2.new(0, 350, 0, 220)
+mainFrame.Position = UDim2.new(0.5, -175, 0.5, -110)
+mainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+mainFrame.BorderSizePixel = 0
+mainFrame.ClipsDescendants = true
+mainFrame.Parent = screenGui
 
-			if eggModel and eggModel ~= Workspace then
-				-- Deteksi Nama Telur Akurat
-				local eggName = prompt.ObjectText ~= "" and prompt.ObjectText or prompt.ActionText
-				if eggName == "" or not eggName then
-					eggName = eggModel.Name
-				end
+local frameCorner = Instance.new("UICorner")
+frameCorner.CornerRadius = UDim.new(0, 12)
+frameCorner.Parent = mainFrame
 
-				-- Deteksi Rarity
-				local rarity = eggModel:GetAttribute("Rarity") 
-					or eggModel:GetAttribute("Tier") 
-					or "Secret"
+-- Judul UI (Map Steal & Egg)
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Name = "Title"
+titleLabel.Size = UDim2.new(1, -40, 0, 45)
+titleLabel.Position = UDim2.new(0, 15, 0, 0)
+titleLabel.BackgroundTransparency = 1
+titleLabel.Text = "STEAL & EGG SYSTEM"
+titleLabel.TextColor3 = Color3.fromRGB(255, 215, 0) -- Warna Emas
+titleLabel.TextSize = 18
+titleLabel.Font = Enum.Font.FredokaOne
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = mainFrame
 
-				local targetPart = parent:IsA("BasePart") and parent or eggModel:FindFirstChildWhichPart("BasePart")
+-- Status Informasi di Dalam UI
+local statusLabel = Instance.new("TextLabel")
+statusLabel.Name = "StatusLabel"
+statusLabel.Size = UDim2.new(1, -30, 0, 80)
+statusLabel.Position = UDim2.new(0, 15, 0, 50)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Text = "Telur Pegasus Abadi / Ubur-ubur Murni\nSiap Mencuri atau Ambil Egg!"
+statusLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+statusLabel.TextSize = 14
+statusLabel.Font = Enum.Font.SourceSansBold
+statusLabel.TextWrapped = true
+statusLabel.Parent = mainFrame
 
-				if targetPart then
-					table.insert(detectedEggs, {
-						Name = tostring(eggName),
-						Rarity = tostring(rarity),
-						Prompt = prompt,
-						Part = targetPart
-					})
-				end
-			end
-		end
-	end
-	return detectedEggs
-end
+-- 2. TOMBOL CLOSE (X)
+local closeButton = Instance.new("TextButton")
+closeButton.Name = "CloseButton"
+closeButton.Size = UDim2.new(0, 30, 0, 30)
+closeButton.Position = UDim2.new(1, -38, 0, 8)
+closeButton.BackgroundColor3 = Color3.fromRGB(220, 50, 50)
+closeButton.Text = "X"
+closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeButton.TextSize = 16
+closeButton.Font = Enum.Font.FredokaOne
+closeButton.Parent = mainFrame
 
--- 2. FUNGSI MOVEMENT SAFE (BYPASS ANTI-TELEPORT)
-local function SafeMoveTo(targetPos)
-	local char = LocalPlayer.Character
-	if not char then return end
-	local root = char:FindFirstChild("HumanoidRootPart")
-	local hum = char:FindFirstChildOfClass("Humanoid")
-	if not root or not hum then return end
+local closeCorner = Instance.new("UICorner")
+closeCorner.CornerRadius = UDim.new(0, 8)
+closeCorner.Parent = closeButton
 
-	-- Bypass Collision
-	for _, part in ipairs(char:GetChildren()) do
-		if part:IsA("BasePart") then part.CanCollide = false end
-	end
+-- 3. TOMBOL LOGO L (BUAT BUKA UI RE-OPEN)
+local openButton = Instance.new("TextButton")
+openButton.Name = "OpenButtonL"
+openButton.Size = UDim2.new(0, 50, 0, 50)
+openButton.Position = UDim2.new(0, 15, 0.5, -25) -- Di sebelah kiri layar
+openButton.BackgroundColor3 = Color3.fromRGB(40, 120, 220)
+openButton.Text = "L"
+openButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+openButton.TextSize = 24
+openButton.Font = Enum.Font.FredokaOne
+openButton.Visible = false -- Sembunyi secara default saat UI terbuka
+openButton.Parent = screenGui
 
-	local dist = (root.Position - targetPos).Magnitude
-	local speed = 60 -- Kecepatan gerak aman
-	local duration = math.clamp(dist / speed, 0.1, 4)
+local openCorner = Instance.new("UICorner")
+openCorner.CornerRadius = UDim.new(0, 25) -- Bentuk lingkaran
+openCorner.Parent = openButton
 
-	local tween = TweenService:Create(root, TweenInfo.new(duration, Enum.EasingStyle.Linear), {
-		CFrame = CFrame.new(targetPos + Vector3.new(0, 2, 0))
-	})
-	tween:Play()
-	tween.Completed:Wait()
-end
+local openStroke = Instance.new("UIStroke")
+openStroke.Thickness = 3
+openStroke.Color = Color3.fromRGB(255, 255, 255)
+openStroke.Parent = openButton
 
--- 3. EKSEKUSI MENCURI TELUR (STEAL SEQUENCE)
-local function StealEgg(eggData)
-	if IsStealing or not eggData then return end
-	IsStealing = true
-
-	print("[LIXX] Bergerak menuju: " .. eggData.Name)
-
-	-- Move ke posisi telur
-	SafeMoveTo(eggData.Part.Position)
-	task.wait(0.1)
-
-	-- Modifikasi ProximityPrompt agar instant
-	eggData.Prompt.HoldDuration = 0
-	eggData.Prompt.MaxActivationDistance = 30
-
-	-- Picu ProximityPrompt
-	pcall(function()
-		fireproximityprompt(eggData.Prompt)
-	end)
-	task.wait(0.3)
-
-	-- Teleport kembali ke Plot/Base milik Player
-	local plots = Workspace:FindFirstChild("Plots") or Workspace:FindFirstChild("Bases")
-	if plots then
-		local myPlot = plots:FindFirstChild(LocalPlayer.Name, true)
-		if myPlot then
-			local plotPart = myPlot:FindFirstChildWhichPart("BasePart")
-			if plotPart then
-				SafeMoveTo(plotPart.Position + Vector3.new(0, 3, 0))
-			end
-		end
-	end
-
-	IsStealing = false
-end
-
--- UI DENGAN DETEKSI OTOMATIS
-local CoreGui = game:GetService("CoreGui")
-if CoreGui:FindFirstChild("LixxEggFixUI") then CoreGui.LixxEggFixUI:Destroy() end
-
-local ScreenGui = Instance.new("ScreenGui", CoreGui)
-ScreenGui.Name = "LixxEggFixUI"
-
-local MainFrame = Instance.new("Frame", ScreenGui)
-MainFrame.Size = UDim2.new(0, 320, 0, 300)
-MainFrame.Position = UDim2.new(0.35, 0, 0.3, 0)
-MainFrame.BackgroundColor3 = Color3.fromRGB(18, 22, 32)
-MainFrame.Active = true
-MainFrame.Draggable = true
-Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
-
-local Title = Instance.new("TextLabel", MainFrame)
-Title.Size = UDim2.new(1, 0, 0, 35)
-Title.Text = "LIXX EGG - MAP SCANNER FIX"
-Title.TextColor3 = Color3.fromRGB(0, 230, 255)
-Title.Font = Enum.Font.GothamBold
-Title.TextSize = 13
-Title.BackgroundTransparency = 1
-
-local Scroll = Instance.new("ScrollingFrame", MainFrame)
-Scroll.Size = UDim2.new(1, -20, 1, -50)
-Scroll.Position = UDim2.new(0, 10, 0, 40)
-Scroll.BackgroundTransparency = 1
-Scroll.CanvasSize = UDim2.new(0, 0, 3, 0)
-Scroll.ScrollBarThickness = 4
-local Layout = Instance.new("UIListLayout", Scroll)
-Layout.Padding = UDim.new(0, 5)
-
-local function RefreshUI()
-	for _, child in ipairs(Scroll:GetChildren()) do
-		if child:IsA("Frame") then child:Destroy() end
-	end
-
-	local eggList = ScanMapEggs()
-	for _, item in ipairs(eggList) do
-		local card = Instance.new("Frame", Scroll)
-		card.Size = UDim2.new(1, -5, 0, 36)
-		card.BackgroundColor3 = Color3.fromRGB(28, 34, 50)
-		Instance.new("UICorner", card).CornerRadius = UDim.new(0, 6)
-
-		local label = Instance.new("TextLabel", card)
-		label.Size = UDim2.new(0.65, 0, 1, 0)
-		label.Position = UDim2.new(0, 8, 0, 0)
-		label.Text = item.Name .. " [" .. item.Rarity .. "]"
-		label.TextColor3 = Color3.fromRGB(255, 255, 255)
-		label.Font = Enum.Font.Gotham
-		label.TextSize = 10
-		label.TextXAlignment = Enum.TextXAlignment.Left
-		label.BackgroundTransparency = 1
-
-		local btn = Instance.new("TextButton", card)
-		btn.Size = UDim2.new(0, 60, 0, 24)
-		btn.Position = UDim2.new(1, -65, 0.5, -12)
-		btn.Text = "STEAL"
-		btn.Font = Enum.Font.GothamBold
-		btn.TextSize = 10
-		btn.TextColor3 = Color3.fromRGB(255, 255, 255)
-		btn.BackgroundColor3 = Color3.fromRGB(0, 180, 90)
-		Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 4)
-
-		btn.MouseButton1Click:Connect(function()
-			task.spawn(function()
-				StealEgg(item)
-			end)
-		end)
-	end
-end
-
--- Refresh scanner setiap 3 detik
-task.spawn(function()
-	while task.wait(3) do
-		if MainFrame.Visible then
-			RefreshUI()
-		end
-	end
+-- 4. LOGIK AKSI FUNGSI (OPEN / CLOSE)
+closeButton.MouseButton1Click:Connect(function()
+	mainFrame.Visible = false
+	openButton.Visible = true
 end)
 
-RefreshUI()
+openButton.MouseButton1Click:Connect(function()
+	mainFrame.Visible = true
+	openButton.Visible = false
+end)
