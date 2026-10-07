@@ -1,652 +1,420 @@
--- ========================================================
--- SCRIPT LIXX EGG - STEAL AND EGG
--- UI Style: Minecraft Theme (Green & Blocky)
--- ========================================================
+-- ==========================================
+-- SCRIPT NAME: LIXX EGG
+-- THEME: MINECRAFT GREEN
+-- ==========================================
 
+local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
-local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
+local player = Players.LocalPlayer
 
-local LocalPlayer = Players.LocalPlayer
-local Character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-local Humanoid = Character:WaitForChild("Humanoid")
-local RootPart = Character:WaitForChild("HumanoidRootPart")
-
--- State Variables
-local AutoStealActive = false
-local SpeedBoostActive = false
-local SpeedValue = 50
-local DuelActive = false
-local NotifActive = false
-local TelegramToken = ""
-local TelegramChatID = ""
-local HistoryLogs = {}
-
--- Priority Order for Auto Steal
-local RarityPriority = {
-    ["Divine"] = 1,
-    ["Eternal"] = 2,
-    ["Secret"] = 3
-}
-
--- Target Locations (Sesuaikan koordinat jika diperlukan)
-local ForestCFrame = CFrame.new(120, 15, -350) -- Koordinat wilayah Forest
-local BaseCFrame = CFrame.new(0, 10, 0)        -- Koordinat Base Player
-
--- HttpRequest function helper
-local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
-
--- Telegram Notification Function
-local function sendTelegramNotif(eggName, rarity)
-    if not NotifActive or TelegramToken == "" or TelegramChatID == "" then return end
-    if not httpRequest then return end
-    
-    local message = "🎉 **LIXX EGG NOTIFICATION** 🎉\n" ..
-                    "👤 Player: " .. LocalPlayer.Name .. "\n" ..
-                    "🥚 Telur Diberhasilkan: " .. eggName .. "\n" ..
-                    "⭐ Rarity: " .. rarity
-                    
-    local payload = HttpService:JSONEncode({
-        chat_id = TelegramChatID,
-        text = message,
-        parse_mode = "Markdown"
-    })
-    
-    httpRequest({
-        Url = "https://api.telegram.org/bot" .. TelegramToken .. "/sendMessage",
-        Method = "POST",
-        Headers = {["Content-Type"] = "application/json"},
-        Body = payload
-    })
+-- [!!!] VARIABEL LOKASI & FUNGSI GAME YANG HARUS DIGANTI [!!!]
+local Base_CFrame = CFrame.new(0, 50, 0) -- GANTI dengan kordinat Base kamu
+local Forest_CFrame = CFrame.new(100, 50, 100) -- GANTI dengan kordinat Forest
+local function PukulPlayer()
+    -- GANTI dengan script remote event untuk memukul (menggunakan pentungan kayu)
+    -- Contoh: game:GetService("ReplicatedStorage").Remotes.Attack:FireServer()
+end
+local function AmbilTelur(telur_instance)
+    -- GANTI dengan script remote event untuk claim telur instan
+    -- Contoh: game:GetService("ReplicatedStorage").Remotes.ClaimEgg:FireServer(telur_instance)
 end
 
--- History Logger
-local function addHistory(eggName, rarity)
-    local timeStr = os.date("%X")
-    table.insert(HistoryLogs, 1, "[" .. timeStr .. "] " .. eggName .. " (" .. rarity .. ")")
-end
+-- ==========================================
+-- UI SETUP (TEMA MINECRAFT / HIJAU)
+-- ==========================================
+local LIXX_EGG = Instance.new("ScreenGui")
+LIXX_EGG.Name = "LIXX_EGG"
+LIXX_EGG.Parent = CoreGui
+LIXX_EGG.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
--- ========================================================
--- CREATE UI (MINECRAFT STYLE)
--- ========================================================
+-- Tombol Logo 'L' untuk membuka menu
+local LogoL = Instance.new("TextButton")
+LogoL.Name = "LogoL"
+LogoL.Parent = LIXX_EGG
+LogoL.BackgroundColor3 = Color3.fromRGB(34, 139, 34)
+LogoL.Position = UDim2.new(0, 20, 0, 20)
+LogoL.Size = UDim2.new(0, 50, 0, 50)
+LogoL.Font = Enum.Font.Arcade
+LogoL.Text = "L"
+LogoL.TextColor3 = Color3.fromRGB(255, 255, 255)
+LogoL.TextSize = 30
+LogoL.BorderSizePixel = 3
+LogoL.BorderColor3 = Color3.fromRGB(0, 0, 0)
 
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "LixxEggGui"
-ScreenGui.ResetOnSpawn = false
-if gethui then
-    ScreenGui.Parent = gethui()
-else
-    ScreenGui.Parent = game:GetService("CoreGui")
-end
-
--- Floating Logo 'L'
-local LogoButton = Instance.new("TextButton")
-LogoButton.Name = "LogoButton"
-LogoButton.Size = UDim2.new(0, 45, 0, 45)
-LogoButton.Position = UDim2.new(0, 15, 0.4, 0)
-LogoButton.BackgroundColor3 = Color3.fromRGB(45, 80, 30)
-LogoButton.BorderColor3 = Color3.fromRGB(20, 40, 15)
-LogoButton.BorderSizePixel = 3
-LogoButton.Text = "L"
-LogoButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-LogoButton.TextSize = 24
-LogoButton.Font = Enum.Font.Arcade
-LogoButton.Active = true
-LogoButton.Draggable = true
-LogoButton.Parent = ScreenGui
-
--- Main UI Frame
+-- Main Frame
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 520, 0, 340)
-MainFrame.Position = UDim2.new(0.5, -260, 0.5, -170)
-MainFrame.BackgroundColor3 = Color3.fromRGB(35, 60, 25) -- Minecraft Dark Green
-MainFrame.BorderColor3 = Color3.fromRGB(15, 30, 10)
+MainFrame.Parent = LIXX_EGG
+MainFrame.BackgroundColor3 = Color3.fromRGB(46, 125, 50) -- Hijau tua ala MC
+MainFrame.Position = UDim2.new(0.5, -250, 0.5, -175)
+MainFrame.Size = UDim2.new(0, 500, 0, 350)
 MainFrame.BorderSizePixel = 4
-MainFrame.Visible = true
-MainFrame.Active = true
-MainFrame.Draggable = true
-MainFrame.Parent = ScreenGui
+MainFrame.BorderColor3 = Color3.fromRGB(27, 94, 32)
+MainFrame.Visible = false
 
--- Header Title Bar
-local Header = Instance.new("Frame")
-Header.Size = UDim2.new(1, 0, 0, 35)
-Header.BackgroundColor3 = Color3.fromRGB(25, 45, 18)
-Header.BorderSizePixel = 0
-Header.Parent = MainFrame
+-- Title & Close Button
+local Title = Instance.new("TextLabel")
+Title.Parent = MainFrame
+Title.BackgroundTransparency = 1
+Title.Size = UDim2.new(1, -40, 0, 30)
+Title.Font = Enum.Font.Arcade
+Title.Text = " LIXX EGG HUB"
+Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+Title.TextSize = 24
+Title.TextXAlignment = Enum.TextXAlignment.Left
 
-local TitleText = Instance.new("TextLabel")
-TitleText.Size = UDim2.new(1, -40, 1, 0)
-TitleText.Position = UDim2.new(0, 10, 0, 0)
-TitleText.BackgroundTransparency = 1
-TitleText.Text = "LIXX EGG - MAP STEAL AND EGG"
-TitleText.TextColor3 = Color3.fromRGB(120, 235, 80)
-TitleText.TextSize = 16
-TitleText.Font = Enum.Font.Arcade
-TitleText.TextXAlignment = Enum.TextXAlignment.Left
-TitleText.Parent = Header
-
--- Close Button 'X'
 local CloseBtn = Instance.new("TextButton")
-CloseBtn.Size = UDim2.new(0, 30, 0, 25)
-CloseBtn.Position = UDim2.new(1, -32, 0, 5)
-CloseBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
-CloseBtn.BorderColor3 = Color3.fromRGB(100, 20, 20)
-CloseBtn.BorderSizePixel = 2
+CloseBtn.Parent = MainFrame
+CloseBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+CloseBtn.Position = UDim2.new(1, -30, 0, 0)
+CloseBtn.Size = UDim2.new(0, 30, 0, 30)
+CloseBtn.Font = Enum.Font.Arcade
 CloseBtn.Text = "X"
 CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-CloseBtn.Font = Enum.Font.Arcade
-CloseBtn.TextSize = 16
-CloseBtn.Parent = Header
+CloseBtn.TextSize = 20
+CloseBtn.BorderSizePixel = 2
 
+-- Toggle UI Logic
+LogoL.MouseButton1Click:Connect(function()
+    MainFrame.Visible = not MainFrame.Visible
+end)
 CloseBtn.MouseButton1Click:Connect(function()
     MainFrame.Visible = false
 end)
 
-LogoButton.MouseButton1Click:Connect(function()
-    MainFrame.Visible = not MainFrame.Visible
-end)
+-- Menu Container
+local MenuContainer = Instance.new("Frame")
+MenuContainer.Parent = MainFrame
+MenuContainer.BackgroundTransparency = 1
+MenuContainer.Position = UDim2.new(0, 0, 0, 30)
+MenuContainer.Size = UDim2.new(1, 0, 1, -30)
 
--- Sidebar Menu Container
-local Sidebar = Instance.new("Frame")
-Sidebar.Size = UDim2.new(0, 120, 1, -35)
-Sidebar.Position = UDim2.new(0, 0, 0, 35)
-Sidebar.BackgroundColor3 = Color3.fromRGB(20, 35, 15)
-Sidebar.BorderSizePixel = 0
-Sidebar.Parent = MainFrame
+-- ==========================================
+-- TAB SYSTEM (5 FITUR)
+-- ==========================================
+local Tabs = {"Auto Egg", "History Egg", "Duel Player", "Telegram", "Info"}
+local TabFrames = {}
+local TabButtons = {}
 
--- Content Frame Container
-local ContentFrame = Instance.new("Frame")
-ContentFrame.Size = UDim2.new(1, -125, 1, -40)
-ContentFrame.Position = UDim2.new(0, 125, 0, 38)
-ContentFrame.BackgroundTransparency = 1
-ContentFrame.Parent = MainFrame
-
--- Menu Frames Table
-local Menus = {}
-local MenuButtons = {}
-
-local MenuNames = {
-    "AUTO EGG",
-    "PANEL EGG",
-    "SPEED BOOST",
-    "HISTORY EGG",
-    "DUEL & NOTIF"
-}
-
-local function SwitchTab(tabIndex)
-    for i, frame in ipairs(Menus) do
-        frame.Visible = (i == tabIndex)
-    end
-    for i, btn in ipairs(MenuButtons) do
-        if i == tabIndex then
-            btn.BackgroundColor3 = Color3.fromRGB(70, 130, 45)
-        else
-            btn.BackgroundColor3 = Color3.fromRGB(30, 55, 20)
-        end
-    end
-end
-
-for i, name in ipairs(MenuNames) do
-    -- Menu Button
+for i, tabName in ipairs(Tabs) do
+    -- Bikin Tombol Tab
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0.9, 0, 0, 30)
-    btn.Position = UDim2.new(0.05, 0, 0, (i - 1) * 36 + 10)
-    btn.BackgroundColor3 = Color3.fromRGB(30, 55, 20)
-    btn.BorderColor3 = Color3.fromRGB(10, 25, 8)
-    btn.BorderSizePixel = 2
-    btn.Text = name
-    btn.TextColor3 = Color3.fromRGB(220, 255, 200)
-    btn.Font = Enum.Font.Arcade
+    btn.Parent = MainFrame
+    btn.BackgroundColor3 = Color3.fromRGB(56, 142, 60)
+    btn.Position = UDim2.new(0, (i-1) * 100, 0, 30)
+    btn.Size = UDim2.new(0, 100, 0, 25)
+    btn.Font = Enum.Font.Code
+    btn.Text = tabName
+    btn.TextColor3 = Color3.fromRGB(255, 255, 255)
     btn.TextSize = 12
-    btn.Parent = Sidebar
-    table.insert(MenuButtons, btn)
-
-    -- Tab Content Frame
-    local page = Instance.new("Frame")
-    page.Size = UDim2.new(1, 0, 1, 0)
-    page.BackgroundTransparency = 1
-    page.Visible = (i == 1)
-    page.Parent = ContentFrame
-    table.insert(Menus, page)
-
+    btn.BorderSizePixel = 1
+    
+    -- Bikin Frame Isi Tab
+    local frame = Instance.new("ScrollingFrame")
+    frame.Parent = MenuContainer
+    frame.BackgroundTransparency = 1
+    frame.Position = UDim2.new(0, 10, 0, 35)
+    frame.Size = UDim2.new(1, -20, 1, -45)
+    frame.Visible = (i == 1) -- Tampilkan menu 1 default
+    frame.ScrollBarThickness = 5
+    
+    TabFrames[tabName] = frame
+    TabButtons[tabName] = btn
+    
     btn.MouseButton1Click:Connect(function()
-        SwitchTab(i)
+        for name, f in pairs(TabFrames) do f.Visible = false end
+        frame.Visible = true
     end)
 end
 
--- ========================================================
--- TAB 1: AUTO EGG
--- ========================================================
-local Tab1 = Menus[1]
+-- ==========================================
+-- FITUR 1: AUTO EGG (Steal, Panel, Speed)
+-- ==========================================
+local AutoEggFrame = TabFrames["Auto Egg"]
+local AutoLayout = Instance.new("UIListLayout")
+AutoLayout.Parent = AutoEggFrame
+AutoLayout.Padding = UDim.new(0, 10)
 
-local AutoStealBtn = Instance.new("TextButton")
-AutoStealBtn.Size = UDim2.new(0.9, 0, 0, 40)
-AutoStealBtn.Position = UDim2.new(0.05, 0, 0.1, 0)
-AutoStealBtn.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
-AutoStealBtn.BorderColor3 = Color3.fromRGB(80, 20, 20)
-AutoStealBtn.BorderSizePixel = 2
-AutoStealBtn.Text = "STEAL: OFF"
-AutoStealBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-AutoStealBtn.Font = Enum.Font.Arcade
-AutoStealBtn.TextSize = 16
-AutoStealBtn.Parent = Tab1
+-- Auto Steal Toggle
+local StealToggle = Instance.new("TextButton")
+StealToggle.Parent = AutoEggFrame
+StealToggle.Size = UDim2.new(1, 0, 0, 35)
+StealToggle.BackgroundColor3 = Color3.fromRGB(150, 50, 50)
+StealToggle.Text = "Auto Steal: OFF"
+StealToggle.Font = Enum.Font.Code
+StealToggle.TextColor3 = Color3.new(1,1,1)
+StealToggle.TextSize = 18
 
-local PriorityLabel = Instance.new("TextLabel")
-PriorityLabel.Size = UDim2.new(0.9, 0, 0, 100)
-PriorityLabel.Position = UDim2.new(0.05, 0, 0.35, 0)
-PriorityLabel.BackgroundColor3 = Color3.fromRGB(25, 45, 18)
-PriorityLabel.BorderColor3 = Color3.fromRGB(10, 25, 8)
-PriorityLabel.BorderSizePixel = 2
-PriorityLabel.Text = "PRIORITAS AUTO STEAL:\n1. Divine\n2. Eternal\n3. Secret"
-PriorityLabel.TextColor3 = Color3.fromRGB(200, 255, 180)
-PriorityLabel.Font = Enum.Font.Arcade
-PriorityLabel.TextSize = 14
-PriorityLabel.Parent = Tab1
-
--- Core Teleport / Steal Execution Routine
-local function ExecuteStealProcess(eggObject, eggName, rarity)
-    if not eggObject or not eggObject:FindFirstChild("HumanoidRootPart") and not eggObject.PrimaryPart then return end
+local isAutoSteal = false
+StealToggle.MouseButton1Click:Connect(function()
+    isAutoSteal = not isAutoSteal
+    StealToggle.BackgroundColor3 = isAutoSteal and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(150, 50, 50)
+    StealToggle.Text = "Auto Steal: " .. (isAutoSteal and "ON" or "OFF")
     
-    local targetPos = (eggObject.PrimaryPart and eggObject.PrimaryPart.Position) or eggObject:FindFirstChildWhichIsA("BasePart").Position
-    
-    -- 1. Lari ke telur
-    Humanoid:MoveTo(targetPos)
-    task.wait(0.3)
-    
-    -- 2. Ambil instan
-    RootPart.CFrame = CFrame.new(targetPos + Vector3.new(0, 2, 0))
-    task.wait(0.2)
-    
-    -- 3. Teleport ke Forest & Berhenti 2 detik
-    RootPart.CFrame = ForestCFrame
-    task.wait(2)
-    
-    -- 4. Teleport ke Base
-    RootPart.CFrame = BaseCFrame
-    
-    -- Record & Notif
-    addHistory(eggName or "Unknown Egg", rarity or "Common")
-    sendTelegramNotif(eggName or "Unknown Egg", rarity or "Common")
-end
-
-AutoStealBtn.MouseButton1Click:Connect(function()
-    AutoStealActive = not AutoStealActive
-    if AutoStealActive then
-        AutoStealBtn.Text = "STEAL: ON"
-        AutoStealBtn.BackgroundColor3 = Color3.fromRGB(40, 150, 40)
-    else
-        AutoStealBtn.Text = "STEAL: OFF"
-        AutoStealBtn.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
-    end
-end)
-
--- Auto Steal Loop Thread
-task.spawn(function()
-    while true do
-        task.wait(1)
-        if AutoStealActive then
-            local bestEgg = nil
-            local highestPriority = 99
-            local chosenRarity = ""
-            local chosenName = ""
-
-            -- Scan Workspace Eggs (Disesuaikan dengan folder telur di map)
-            local eggFolder = Workspace:FindFirstChild("Eggs") or Workspace
-            for _, obj in ipairs(eggFolder:GetChildren()) do
-                local rarity = obj:GetAttribute("Rarity") or (obj:FindFirstChild("Rarity") and obj.Rarity.Value)
-                if rarity and RarityPriority[rarity] then
-                    if RarityPriority[rarity] < highestPriority then
-                        highestPriority = RarityPriority[rarity]
-                        bestEgg = obj
-                        chosenRarity = rarity
-                        chosenName = obj.Name
-                    end
-                end
+    if isAutoSteal then
+        task.spawn(function()
+            while isAutoSteal do
+                task.wait(1)
+                -- [LOGIKA STEAL PRIORITAS]
+                -- Sistem Prioritas: Divine -> Eternal -> Secret
+                -- Karena ini dummy, logika teleportasinya seperti ini:
+                -- 1. Deteksi Telur di map (Ganti 'Workspace.Eggs' dengan path game asli)
+                -- 2. player.Character.HumanoidRootPart.CFrame = Telur.CFrame
+                -- 3. AmbilTelur(Telur)
+                -- 4. player.Character.HumanoidRootPart.CFrame = Forest_CFrame
+                -- 5. task.wait(2)
+                -- 6. player.Character.HumanoidRootPart.CFrame = Base_CFrame
             end
-
-            if bestEgg then
-                ExecuteStealProcess(bestEgg, chosenName, chosenRarity)
-            end
-        end
-    end
-end)
-
--- ========================================================
--- TAB 2: PANEL EGG (Manual Select & Refresh)
--- ========================================================
-local Tab2 = Menus[2]
-
-local ScrollPanel = Instance.new("ScrollingFrame")
-ScrollPanel.Size = UDim2.new(0.95, 0, 0.8, 0)
-ScrollPanel.Position = UDim2.new(0.025, 0, 0.025, 0)
-ScrollPanel.BackgroundColor3 = Color3.fromRGB(20, 35, 15)
-ScrollPanel.BorderColor3 = Color3.fromRGB(10, 20, 8)
-ScrollPanel.BorderSizePixel = 2
-ScrollPanel.ScrollBarThickness = 6
-ScrollPanel.Parent = Tab2
-
-local UIListLayout = Instance.new("UIListLayout")
-UIListLayout.Padding = UDim.new(0, 5)
-UIListLayout.Parent = ScrollPanel
-
-local RefreshBtn = Instance.new("TextButton")
-RefreshBtn.Size = UDim2.new(0.95, 0, 0.12, 0)
-RefreshBtn.Position = UDim2.new(0.025, 0, 0.85, 0)
-RefreshBtn.BackgroundColor3 = Color3.fromRGB(45, 90, 120)
-RefreshBtn.BorderColor3 = Color3.fromRGB(20, 40, 60)
-RefreshBtn.BorderSizePixel = 2
-RefreshBtn.Text = "REFRESH LIST TELUR"
-RefreshBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-RefreshBtn.Font = Enum.Font.Arcade
-RefreshBtn.TextSize = 14
-RefreshBtn.Parent = Tab2
-
-local function RefreshEggPanel()
-    for _, child in ipairs(ScrollPanel:GetChildren()) do
-        if child:IsA("Frame") then child:Destroy() end
-    end
-    
-    local eggFolder = Workspace:FindFirstChild("Eggs") or Workspace
-    local itemList = {}
-    
-    for _, egg in ipairs(eggFolder:GetChildren()) do
-        if egg:IsA("Model") or egg:IsA("BasePart") then
-            local rarity = egg:GetAttribute("Rarity") or "Common"
-            table.insert(itemList, {Object = egg, Name = egg.Name, Rarity = rarity})
-        end
-    end
-    
-    -- Sort Highest Rarity First
-    table.sort(itemList, function(a, b)
-        local pA = RarityPriority[a.Rarity] or 99
-        local pB = RarityPriority[b.Rarity] or 99
-        return pA < pB
-    end)
-    
-    for _, item in ipairs(itemList) do
-        local card = Instance.new("Frame")
-        card.Size = UDim2.new(0.98, 0, 0, 45)
-        card.BackgroundColor3 = Color3.fromRGB(30, 55, 20)
-        card.BorderColor3 = Color3.fromRGB(15, 30, 10)
-        card.BorderSizePixel = 2
-        card.Parent = ScrollPanel
-        
-        local img = Instance.new("ImageLabel")
-        img.Size = UDim2.new(0, 35, 0, 35)
-        img.Position = UDim2.new(0, 5, 0, 5)
-        img.BackgroundColor3 = Color3.fromRGB(15, 25, 10)
-        img.Image = "rbxassetid://6031075931" -- Placeholder Icon Telur
-        img.Parent = card
-        
-        local info = Instance.new("TextLabel")
-        info.Size = UDim2.new(0.5, 0, 1, 0)
-        info.Position = UDim2.new(0, 45, 0, 0)
-        info.BackgroundTransparency = 1
-        info.Text = item.Name .. "\n[" .. item.Rarity .. "]"
-        info.TextColor3 = Color3.fromRGB(220, 255, 200)
-        info.Font = Enum.Font.Arcade
-        info.TextSize = 11
-        info.TextXAlignment = Enum.TextXAlignment.Left
-        info.Parent = card
-        
-        local stealBtn = Instance.new("TextButton")
-        stealBtn.Size = UDim2.new(0, 70, 0, 28)
-        stealBtn.Position = UDim2.new(1, -75, 0.2, 0)
-        stealBtn.BackgroundColor3 = Color3.fromRGB(40, 140, 40)
-        stealBtn.BorderColor3 = Color3.fromRGB(15, 60, 15)
-        stealBtn.BorderSizePixel = 2
-        stealBtn.Text = "STEAL"
-        stealBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-        stealBtn.Font = Enum.Font.Arcade
-        stealBtn.TextSize = 12
-        stealBtn.Parent = card
-        
-        stealBtn.MouseButton1Click:Connect(function()
-            ExecuteStealProcess(item.Object, item.Name, item.Rarity)
         end)
     end
-end
+end)
 
-RefreshBtn.MouseButton1Click:Connect(RefreshEggPanel)
-
--- ========================================================
--- TAB 3: SPEED BOOST
--- ========================================================
-local Tab3 = Menus[3]
-
+-- Speed Boost
 local SpeedToggle = Instance.new("TextButton")
-SpeedToggle.Size = UDim2.new(0.9, 0, 0, 40)
-SpeedToggle.Position = UDim2.new(0.05, 0, 0.15, 0)
-SpeedToggle.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
-SpeedToggle.BorderColor3 = Color3.fromRGB(80, 20, 20)
-SpeedToggle.BorderSizePixel = 2
-SpeedToggle.Text = "SPEED BOOST: OFF"
-SpeedToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-SpeedToggle.Font = Enum.Font.Arcade
-SpeedToggle.TextSize = 15
-SpeedToggle.Parent = Tab3
+SpeedToggle.Parent = AutoEggFrame
+SpeedToggle.Size = UDim2.new(1, 0, 0, 35)
+SpeedToggle.BackgroundColor3 = Color3.fromRGB(150, 50, 50)
+SpeedToggle.Text = "Speed Boost: OFF (Set 50)"
+SpeedToggle.Font = Enum.Font.Code
+SpeedToggle.TextColor3 = Color3.new(1,1,1)
+SpeedToggle.TextSize = 18
 
-local SpeedInput = Instance.new("TextBox")
-SpeedInput.Size = UDim2.new(0.9, 0, 0, 35)
-SpeedInput.Position = UDim2.new(0.05, 0, 0.35, 0)
-SpeedInput.BackgroundColor3 = Color3.fromRGB(20, 35, 15)
-SpeedInput.BorderColor3 = Color3.fromRGB(10, 20, 8)
-SpeedInput.BorderSizePixel = 2
-SpeedInput.Text = "50"
-SpeedInput.TextColor3 = Color3.fromRGB(255, 255, 100)
-SpeedInput.Font = Enum.Font.Arcade
-SpeedInput.TextSize = 16
-SpeedInput.Parent = Tab3
-
+local isSpeed = false
+local currentSpeed = 50 -- Default speed yg diatur
 SpeedToggle.MouseButton1Click:Connect(function()
-    SpeedBoostActive = not SpeedBoostActive
-    if SpeedBoostActive then
-        SpeedToggle.Text = "SPEED BOOST: ON"
-        SpeedToggle.BackgroundColor3 = Color3.fromRGB(40, 150, 40)
-        SpeedValue = tonumber(SpeedInput.Text) or 50
-    else
-        SpeedToggle.Text = "SPEED BOOST: OFF"
-        SpeedToggle.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
-        Humanoid.WalkSpeed = 16
+    isSpeed = not isSpeed
+    SpeedToggle.BackgroundColor3 = isSpeed and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(150, 50, 50)
+    SpeedToggle.Text = "Speed Boost: " .. (isSpeed and "ON" or "OFF")
+    
+    if isSpeed and player.Character and player.Character:FindFirstChild("Humanoid") then
+        player.Character.Humanoid.WalkSpeed = currentSpeed
+    elseif player.Character and player.Character:FindFirstChild("Humanoid") then
+        player.Character.Humanoid.WalkSpeed = 16
     end
 end)
 
-RunService.RenderStepped:Connect(function()
-    if SpeedBoostActive and Humanoid then
-        Humanoid.WalkSpeed = tonumber(SpeedInput.Text) or SpeedValue
+-- Manual Steal Panel UI (Contoh 1 Item)
+local PanelTitle = Instance.new("TextLabel", AutoEggFrame)
+PanelTitle.Size = UDim2.new(1, 0, 0, 20)
+PanelTitle.BackgroundTransparency = 1
+PanelTitle.Text = "--- STEAL PANEL (Manual) ---"
+PanelTitle.TextColor3 = Color3.new(1,1,1)
+PanelTitle.Font = Enum.Font.Code
+PanelTitle.TextSize = 14
+
+local DummyEgg = Instance.new("Frame", AutoEggFrame)
+DummyEgg.Size = UDim2.new(1, 0, 0, 40)
+DummyEgg.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+
+local DummyName = Instance.new("TextLabel", DummyEgg)
+DummyName.Size = UDim2.new(0.6, 0, 1, 0)
+DummyName.BackgroundTransparency = 1
+DummyName.Text = " [Divine] Dragon Egg"
+DummyName.TextColor3 = Color3.new(1, 0.8, 0)
+DummyName.TextXAlignment = Enum.TextXAlignment.Left
+
+local BtnManualSteal = Instance.new("TextButton", DummyEgg)
+BtnManualSteal.Size = UDim2.new(0.3, 0, 0.8, 0)
+BtnManualSteal.Position = UDim2.new(0.65, 0, 0.1, 0)
+BtnManualSteal.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+BtnManualSteal.Text = "STEAL"
+BtnManualSteal.TextColor3 = Color3.new(1,1,1)
+
+BtnManualSteal.MouseButton1Click:Connect(function()
+    -- Logika Manual Steal
+    if player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+        player.Character.HumanoidRootPart.CFrame = Forest_CFrame
+        task.wait(2)
+        player.Character.HumanoidRootPart.CFrame = Base_CFrame
+        -- Panggil notif history & telegram (fungsi di bawah)
     end
 end)
 
--- ========================================================
--- TAB 4: HISTORY EGG
--- ========================================================
-local Tab4 = Menus[4]
+-- ==========================================
+-- FITUR 2: HISTORY EGG
+-- ==========================================
+local HistoryFrame = TabFrames["History Egg"]
+local HistLayout = Instance.new("UIListLayout", HistoryFrame)
 
-local HistoryScroll = Instance.new("ScrollingFrame")
-HistoryScroll.Size = UDim2.new(0.95, 0, 0.75, 0)
-HistoryScroll.Position = UDim2.new(0.025, 0, 0.025, 0)
-HistoryScroll.BackgroundColor3 = Color3.fromRGB(20, 35, 15)
-HistoryScroll.BorderColor3 = Color3.fromRGB(10, 20, 8)
-HistoryScroll.BorderSizePixel = 2
-HistoryScroll.ScrollBarThickness = 6
-HistoryScroll.Parent = Tab4
+local BtnDeleteHistory = Instance.new("TextButton", HistoryFrame)
+BtnDeleteHistory.Size = UDim2.new(1, 0, 0, 30)
+BtnDeleteHistory.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+BtnDeleteHistory.Text = "DELETE HISTORY"
+BtnDeleteHistory.TextColor3 = Color3.new(1,1,1)
+BtnDeleteHistory.Font = Enum.Font.Code
 
-local HistoryLayout = Instance.new("UIListLayout")
-HistoryLayout.Padding = UDim.new(0, 4)
-HistoryLayout.Parent = HistoryScroll
+local HistList = Instance.new("Frame", HistoryFrame)
+HistList.Size = UDim2.new(1, 0, 0, 200)
+HistList.BackgroundTransparency = 1
+local HistListLayout = Instance.new("UIListLayout", HistList)
 
-local DeleteHistBtn = Instance.new("TextButton")
-DeleteHistBtn.Size = UDim2.new(0.95, 0, 0.15, 0)
-DeleteHistBtn.Position = UDim2.new(0.025, 0, 0.8, 0)
-DeleteHistBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
-DeleteHistBtn.BorderColor3 = Color3.fromRGB(100, 20, 20)
-DeleteHistBtn.BorderSizePixel = 2
-DeleteHistBtn.Text = "DELETE HISTORY"
-DeleteHistBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-DeleteHistBtn.Font = Enum.Font.Arcade
-DeleteHistBtn.TextSize = 14
-DeleteHistBtn.Parent = Tab4
-
-local function RefreshHistoryUI()
-    for _, child in ipairs(HistoryScroll:GetChildren()) do
-        if child:IsA("TextLabel") then child:Destroy() end
+BtnDeleteHistory.MouseButton1Click:Connect(function()
+    for _, v in pairs(HistList:GetChildren()) do
+        if v:IsA("TextLabel") then v:Destroy() end
     end
-    for _, entry in ipairs(HistoryLogs) do
-        local lbl = Instance.new("TextLabel")
-        lbl.Size = UDim2.new(0.98, 0, 0, 22)
-        lbl.BackgroundColor3 = Color3.fromRGB(30, 55, 20)
-        lbl.BorderSizePixel = 0
-        lbl.Text = " " .. entry
-        lbl.TextColor3 = Color3.fromRGB(200, 255, 180)
-        lbl.Font = Enum.Font.Arcade
-        lbl.TextSize = 11
-        lbl.TextXAlignment = Enum.TextXAlignment.Left
-        lbl.Parent = HistoryScroll
-    end
+end)
+
+local function AddHistory(nama_telur)
+    local lbl = Instance.new("TextLabel", HistList)
+    lbl.Size = UDim2.new(1, 0, 0, 25)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = "[+] Berhasil mencuri: " .. nama_telur
+    lbl.TextColor3 = Color3.new(0, 1, 0)
+    lbl.Font = Enum.Font.Code
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
 end
 
-DeleteHistBtn.MouseButton1Click:Connect(function()
-    HistoryLogs = {}
-    RefreshHistoryUI()
-end)
+-- ==========================================
+-- FITUR 3: DUEL PLAYER
+-- ==========================================
+local DuelFrame = TabFrames["Duel Player"]
+local DuelLayout = Instance.new("UIListLayout", DuelFrame)
+DuelLayout.Padding = UDim.new(0, 5)
 
--- Auto Refresh History UI saat membuka Tab 4
-MenuButtons[4].MouseButton1Click:Connect(RefreshHistoryUI)
+local DuelToggle = Instance.new("TextButton", DuelFrame)
+DuelToggle.Size = UDim2.new(1, 0, 0, 35)
+DuelToggle.BackgroundColor3 = Color3.fromRGB(150, 50, 50)
+DuelToggle.Text = "Auto Duel (Pukul): OFF"
+DuelToggle.TextColor3 = Color3.new(1,1,1)
+DuelToggle.Font = Enum.Font.Code
 
--- ========================================================
--- TAB 5: DUEL PLAYER & NOTIFIKASI TELEGRAM
--- ========================================================
-local Tab5 = Menus[5]
-
--- Telegram Config Inputs
-local TokenBox = Instance.new("TextBox")
-TokenBox.Size = UDim2.new(0.9, 0, 0, 30)
-TokenBox.Position = UDim2.new(0.05, 0, 0.05, 0)
-TokenBox.BackgroundColor3 = Color3.fromRGB(20, 35, 15)
-TokenBox.Text = "BOT TOKEN TELEGRAM"
-TokenBox.TextColor3 = Color3.fromRGB(180, 180, 180)
-TokenBox.Font = Enum.Font.Arcade
-TokenBox.TextSize = 11
-TokenBox.Parent = Tab5
-
-local ChatIdBox = Instance.new("TextBox")
-ChatIdBox.Size = UDim2.new(0.9, 0, 0, 30)
-ChatIdBox.Position = UDim2.new(0.05, 0, 0.17, 0)
-ChatIdBox.BackgroundColor3 = Color3.fromRGB(20, 35, 15)
-ChatIdBox.Text = "ID PENERIMA / CHAT ID"
-ChatIdBox.TextColor3 = Color3.fromRGB(180, 180, 180)
-ChatIdBox.Font = Enum.Font.Arcade
-ChatIdBox.TextSize = 11
-ChatIdBox.Parent = Tab5
-
-local NotifToggle = Instance.new("TextButton")
-NotifToggle.Size = UDim2.new(0.9, 0, 0, 32)
-NotifToggle.Position = UDim2.new(0.05, 0, 0.29, 0)
-NotifToggle.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
-NotifToggle.Text = "NOTIFIKASI TELEGRAM: OFF"
-NotifToggle.TextColor3 = Color3.fromRGB(255, 255, 255)
-NotifToggle.Font = Enum.Font.Arcade
-NotifToggle.TextSize = 12
-NotifToggle.Parent = Tab5
-
-NotifToggle.MouseButton1Click:Connect(function()
-    NotifActive = not NotifActive
-    TelegramToken = TokenBox.Text
-    TelegramChatID = ChatIdBox.Text
-    if NotifActive then
-        NotifToggle.Text = "NOTIFIKASI TELEGRAM: ON"
-        NotifToggle.BackgroundColor3 = Color3.fromRGB(40, 150, 40)
-    else
-        NotifToggle.Text = "NOTIFIKASI TELEGRAM: OFF"
-        NotifToggle.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
-    end
-end)
-
--- Duel Player Section
-local DuelScroll = Instance.new("ScrollingFrame")
-DuelScroll.Size = UDim2.new(0.9, 0, 0.5, 0)
-DuelScroll.Position = UDim2.new(0.05, 0, 0.45, 0)
-DuelScroll.BackgroundColor3 = Color3.fromRGB(20, 35, 15)
-DuelScroll.BorderSizePixel = 2
-DuelScroll.Parent = Tab5
-
-local DuelLayout = Instance.new("UIListLayout")
-DuelLayout.Padding = UDim.new(0, 3)
-DuelLayout.Parent = DuelScroll
-
-local function RefreshDuelPlayers()
-    for _, child in ipairs(DuelScroll:GetChildren()) do
-        if child:IsA("Frame") then child:Destroy() end
-    end
-
-    for _, targetPlayer in ipairs(Players:GetPlayers()) do
-        if targetPlayer ~= LocalPlayer then
-            local card = Instance.new("Frame")
-            card.Size = UDim2.new(0.98, 0, 0, 30)
-            card.BackgroundColor3 = Color3.fromRGB(30, 55, 20)
-            card.BorderSizePixel = 0
-            card.Parent = DuelScroll
-
-            local nameLbl = Instance.new("TextLabel")
-            nameLbl.Size = UDim2.new(0.6, 0, 1, 0)
-            nameLbl.Position = UDim2.new(0, 5, 0, 0)
-            nameLbl.BackgroundTransparency = 1
-            nameLbl.Text = targetPlayer.DisplayName
-            nameLbl.TextColor3 = Color3.fromRGB(255, 255, 255)
-            nameLbl.Font = Enum.Font.Arcade
-            nameLbl.TextSize = 11
-            nameLbl.TextXAlignment = Enum.TextXAlignment.Left
-            nameLbl.Parent = card
-
-            -- Cek apakah target membawa telur
-            local targetChar = targetPlayer.Character
-            local isCarryingEgg = targetChar and (targetChar:FindFirstChild("Egg") or targetChar:FindFirstChildWithClass("Tool"))
-
-            local duelBtn = Instance.new("TextButton")
-            duelBtn.Size = UDim2.new(0, 60, 0, 22)
-            duelBtn.Position = UDim2.new(1, -65, 0.12, 0)
-            duelBtn.BorderSizePixel = 0
-            duelBtn.Font = Enum.Font.Arcade
-            duelBtn.TextSize = 10
-            duelBtn.Parent = card
-
-            if isCarryingEgg then
-                duelBtn.Text = "STEAL"
-                duelBtn.BackgroundColor3 = Color3.fromRGB(40, 180, 40) -- Hijau
-                duelBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-            else
-                duelBtn.Text = "NO EGG"
-                duelBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40) -- Merah
-                duelBtn.TextColor3 = Color3.fromRGB(200, 200, 200)
-            end
-
-            -- Fitur Pukul Pentungan & Ambil Telur
-            duelBtn.MouseButton1Click:Connect(function()
-                if not isCarryingEgg or not targetChar or not targetChar:FindFirstChild("HumanoidRootPart") then return end
-
-                -- Equip Pentungan Kayu
-                local club = LocalPlayer.Backpack:FindFirstChild("Wooden Club") or LocalPlayer.Backpack:FindFirstChildWhichIsA("Tool")
-                if club then Humanoid:EquipTool(club) end
-
-                -- Teleport ke player & Pukul
-                RootPart.CFrame = targetChar.HumanoidRootPart.CFrame * CFrame.new(0, 0, 2)
-                task.wait(0.2)
-                
-                if club then club:Activate() end
+local isAutoDuel = false
+DuelToggle.MouseButton1Click:Connect(function()
+    isAutoDuel = not isAutoDuel
+    DuelToggle.BackgroundColor3 = isAutoDuel and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(150, 50, 50)
+    DuelToggle.Text = "Auto Duel (Pukul): " .. (isAutoDuel and "ON" or "OFF")
+    
+    if isAutoDuel then
+        task.spawn(function()
+            while isAutoDuel do
                 task.wait(0.5)
+                PukulPlayer() -- Memanggil fungsi pukul secara otomatis
+            end
+        end)
+    end
+end)
 
-                -- Ambil Telur Jatuh
-                local droppedEgg = Workspace:FindFirstChild("DroppedEgg") or Workspace:FindFirstChild("Egg")
-                if droppedEgg then
-                    ExecuteStealProcess(droppedEgg, "Stolen Egg", "Secret")
-                end
-            end)
+-- Tombol list player untuk Steal Duel
+local function RefreshPlayerList()
+    -- Clear old
+    for _, v in pairs(DuelFrame:GetChildren()) do
+        if v:IsA("Frame") then v:Destroy() end
+    end
+    
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= player then
+            local pFrame = Instance.new("Frame", DuelFrame)
+            pFrame.Size = UDim2.new(1, 0, 0, 30)
+            pFrame.BackgroundColor3 = Color3.fromRGB(40,40,40)
+            
+            local pName = Instance.new("TextLabel", pFrame)
+            pName.Size = UDim2.new(0.6, 0, 1, 0)
+            pName.BackgroundTransparency = 1
+            pName.Text = p.Name
+            pName.TextColor3 = Color3.new(1,1,1)
+            
+            local btnStealPlayer = Instance.new("TextButton", pFrame)
+            btnStealPlayer.Size = UDim2.new(0.3, 0, 0.8, 0)
+            btnStealPlayer.Position = UDim2.new(0.65, 0, 0.1, 0)
+            
+            -- LOGIKA DUMMY: Cek apakah player bawa telur
+            local bawaTelur = true -- [GANTI INI DENGAN PENGECEKAN GAME ASLI]
+            
+            if bawaTelur then
+                btnStealPlayer.BackgroundColor3 = Color3.fromRGB(0, 200, 0)
+                btnStealPlayer.Text = "STEAL"
+                btnStealPlayer.MouseButton1Click:Connect(function()
+                    -- Teleport ke player tersebut
+                    if p.Character and p.Character:FindFirstChild("HumanoidRootPart") and player.Character then
+                        player.Character.HumanoidRootPart.CFrame = p.Character.HumanoidRootPart.CFrame
+                        task.wait(1)
+                        PukulPlayer()
+                        task.wait(0.5)
+                        player.Character.HumanoidRootPart.CFrame = Forest_CFrame
+                        task.wait(2)
+                        player.Character.HumanoidRootPart.CFrame = Base_CFrame
+                    end
+                end)
+            else
+                btnStealPlayer.BackgroundColor3 = Color3.fromRGB(200, 0, 0)
+                btnStealPlayer.Text = "KOSONG"
+            end
         end
     end
 end
+RefreshPlayerList() -- Panggil pertama kali
 
-MenuButtons[5].MouseButton1Click:Connect(RefreshDuelPlayers)
-print("LIXX EGG Loaded Successfully!")
+-- ==========================================
+-- FITUR 4: TELEGRAM NOTIFIKASI
+-- ==========================================
+local TeleFrame = TabFrames["Telegram"]
+local TeleLayout = Instance.new("UIListLayout", TeleFrame)
+TeleLayout.Padding = UDim.new(0, 5)
+
+local TokenInput = Instance.new("TextBox", TeleFrame)
+TokenInput.Size = UDim2.new(1, 0, 0, 30)
+TokenInput.PlaceholderText = "Masukkan Bot Token Telegram..."
+TokenInput.Text = ""
+TokenInput.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+TokenInput.TextColor3 = Color3.new(1,1,1)
+
+local IDInput = Instance.new("TextBox", TeleFrame)
+IDInput.Size = UDim2.new(1, 0, 0, 30)
+IDInput.PlaceholderText = "Masukkan Chat ID Penerima..."
+IDInput.Text = ""
+IDInput.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+IDInput.TextColor3 = Color3.new(1,1,1)
+
+local TeleToggle = Instance.new("TextButton", TeleFrame)
+TeleToggle.Size = UDim2.new(1, 0, 0, 35)
+TeleToggle.BackgroundColor3 = Color3.fromRGB(150, 50, 50)
+TeleToggle.Text = "Notifikasi: OFF"
+TeleToggle.TextColor3 = Color3.new(1,1,1)
+TeleToggle.Font = Enum.Font.Code
+
+local isTeleOn = false
+TeleToggle.MouseButton1Click:Connect(function()
+    isTeleOn = not isTeleOn
+    TeleToggle.BackgroundColor3 = isTeleOn and Color3.fromRGB(50, 150, 50) or Color3.fromRGB(150, 50, 50)
+    TeleToggle.Text = "Notifikasi: " .. (isTeleOn and "ON" or "OFF")
+end)
+
+-- Fungsi kirim Webhook Telegram
+local function SendTelegram(nama_telur)
+    if not isTeleOn or TokenInput.Text == "" or IDInput.Text == "" then return end
+    
+    local url = "https://api.telegram.org/bot" .. TokenInput.Text .. "/sendMessage"
+    local data = {
+        ["chat_id"] = IDInput.Text,
+        ["text"] = "🥚 *LIXX EGG BOT*\nBerhasil mencuri telur: *" .. nama_telur .. "*\nStatus: Aman di Base!",
+        ["parse_mode"] = "Markdown"
+    }
+    
+    -- Memerlukan Executor yang support HTTP Request (Synapse, Krnl, Fluxus dll)
+    local request = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
+    if request then
+        request({
+            Url = url,
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body = HttpService:JSONEncode(data)
+        })
+    end
+end
+
+-- ==========================================
+-- FITUR 5: INFO / SETTINGS
+-- ==========================================
+local InfoFrame = TabFrames["Info"]
+local InfoText = Instance.new("TextLabel", InfoFrame)
+InfoText.Size = UDim2.new(1, 0, 1, 0)
+InfoText.BackgroundTransparency = 1
+InfoText.Text = "LIXX EGG SCRIPT\nCreated Custom for You\n\n- Tema Minecraft\n- Auto Teleport Forest -> Base\n- Prioritas: Divine > Eternal > Secret\n- Jangan lupa set CFrame di Script!"
+InfoText.TextColor3 = Color3.new(1,1,1)
+InfoText.Font = Enum.Font.Code
+InfoText.TextSize = 14
+
+print("LIXX EGG HUB Loaded Successfully!")
