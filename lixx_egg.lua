@@ -431,7 +431,34 @@ end)
 ------------------------------------------------------------
 -- RAYFIELD UI
 ------------------------------------------------------------
-local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+local function showError(msg)
+    warn("[LIXX EGG] " .. tostring(msg))
+    local t = Instance.new("TextLabel", Gui)
+    t.Size = UDim2.new(0.8, 0, 0, 60); t.Position = UDim2.new(0.1, 0, 0.05, 0)
+    t.BackgroundColor3 = Color3.fromRGB(120, 20, 20); t.TextColor3 = Color3.new(1, 1, 1)
+    t.TextWrapped = true; t.TextSize = 14; t.Font = Enum.Font.GothamBold
+    t.Text = "LIXX EGG ERROR: " .. tostring(msg)
+    task.delay(15, function() t:Destroy() end)
+end
+
+local RAYFIELD_URLS = {
+    "https://sirius.menu/rayfield",
+    "https://raw.githubusercontent.com/SiegeHub/Rayfield/main/source.lua",
+    "https://raw.githubusercontent.com/shlexware/Rayfield/main/source",
+}
+local Rayfield
+for _, url in ipairs(RAYFIELD_URLS) do
+    local ok, res = pcall(function()
+        return loadstring(game:HttpGet(url))()
+    end)
+    if ok and res then Rayfield = res break end
+    warn("[LIXX EGG] gagal load Rayfield dari " .. url .. " : " .. tostring(res))
+end
+if not Rayfield then
+    showError("Rayfield gagal di-load dari semua link. Cek koneksi / coba executor lain.")
+    return
+end
+
 local Window = Rayfield:CreateWindow({
     Name = "LIXX EGG",
     LoadingTitle = "LIXX EGG",
