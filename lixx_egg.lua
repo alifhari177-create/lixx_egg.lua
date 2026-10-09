@@ -38,7 +38,7 @@ local httpRequest = (syn and syn.request) or (http and http.request) or http_req
 local S = {
     Steal = false, Speed = false, SpeedValue = 50, Duel = false, Notif = false,
     Forest = nil, Base = nil,
-    IgnoreBase = true, BaseRadius = 70, Mode = "Teleport", TweenSpeed = 300,
+    IgnoreBase = true, BaseKeys = {}, AllowedZones = {}, BaseCenter = nil, BaseRadiusLearned = 70, BaseRadius = 70, Mode = "Teleport", TweenSpeed = 300,
     Token = "", ChatId = "",
     History = {}, Busy = false,
 }
@@ -100,6 +100,7 @@ end
 local RARITY_WORDS = {}
 for _, r in ipairs(CONFIG.PanelOrder) do RARITY_WORDS[r:lower()] = r end
 local EggCache = {}
+local AllCache, ZoneCounts = {}, {}
 local Banner
 
 local function cleanText(t)
@@ -190,7 +191,23 @@ local function resolveRarity(owner)
     return "Unknown", "none"
 end
 
+local function zoneKeyOf(obj)
+    local segs = {}
+    for seg in obj:GetFullName():gmatch("[^%.]+") do segs[#segs + 1] = seg end
+    if segs[1] == "Workspace" then table.remove(segs, 1) end
+    table.remove(segs) -- buang nama telur
+    while #segs > 1 do
+        local last = segs[#segs]
+        if last:find("%d") or #last > 20 or last:find("%-") then table.remove(segs) else break end
+    end
+    return #segs > 0 and table.concat(segs, ".") or "(root)"
+end
+
 local function isBaseEgg(e)
+    if e.Zone and S.BaseKeys[e.Zone] then return true end
+    if S.BaseCenter and e.Part and (e.Part.Position - S.BaseCenter).Magnitude < S.BaseRadiusLearned then
+        return true
+    end
     if S.Base and e.Part and (e.Part.Position - S.Base).Magnitude < (S.BaseRadius or 70) then return true end
     local node = e.Obj
     for _ = 1, 6 do
@@ -255,13 +272,17 @@ local function rescan()
             end
         end)
     end
-    local result = {}
+    local result, all, zc = {}, {}, {}
     for _, e in ipairs(found) do
         pcall(function()
             local o = e.Obj
             e.Part = partOf(o) or (o:IsA("Model") and o:FindFirstChildWhichIsA("BasePart", true)) or nil
             if not e.Part then return end
+            e.Zone = zoneKeyOf(o)
+            zc[e.Zone] = (zc[e.Zone] or 0) + 1
+            table.insert(all, e)
             if S.IgnoreBase and isBaseEgg(e) then return end
+            if next(S.AllowedZones) and not S.AllowedZones[e.Zone] then return end
             e.Prompt = e.Prompt or o:FindFirstChildWhichIsA("ProximityPrompt", true)
             if not e.Prompt and o.Parent and o.Parent ~= workspace and o.Parent:IsA("Model") then
                 e.Prompt = o.Parent:FindFirstChildWhichIsA("ProximityPrompt", true)
@@ -285,6 +306,8 @@ local function rescan()
     end
     table.sort(result, function(a, b) return rankOf(a.Rarity) < rankOf(b.Rarity) end)
     EggCache = result
+    AllCache = all
+    ZoneCounts = zc
 end
 
 local function scanEggs() return EggCache end
@@ -314,6 +337,11 @@ local function dumpInfo()
         out[#out + 1] = ("%s | %s | %s | src=%s | prompt=%s | img=%s"):format(
             e.Obj:GetFullName(), e.Obj.ClassName, e.Rarity, e.Source, tostring(e.Prompt ~= nil), tostring(e.Image))
     end
+    out[#out + 1] = "-- ZONA (key = jumlah telur) --"
+    for k, n in pairs(ZoneCounts) do
+        out[#out + 1] = ("%s = %d%s"):format(k, n, S.BaseKeys[k] and "  [BASE]" or "")
+    end
+    out[#out + 1] = "BaseCenter=" .. tostring(S.BaseCenter) .. " radius=" .. tostring(S.BaseRadiusLearned)
     out[#out + 1] = "-- Prompt '" .. CONFIG.PromptName .. "' (maks 8) --"
     local n = 0
     local names = {}
@@ -348,6 +376,34 @@ local function dumpInfo()
     local txt = table.concat(out, "\n")
     if setclipboard then setclipboard(txt) end
     print(txt)
+end
+
+-- Kalibrasi: berdiri di base -> telur dekat = telur base, dipelajari otomatis
+local function calibrateBase()
+    local root = hrp().Position
+    local near, far, count, maxd = {}, {}, 0, 0
+    for _, e in ipairs(AllCache) do
+        local d = (e.Part.Position - root).Magnitude
+        if d <= S.BaseRadius then
+            near[e.Zone] = true
+            count += 1
+            if d > maxd then maxd = d end
+        else
+            far[e.Zone] = true
+        end
+    end
+    S.BaseKeys = {}
+    local keys = {}
+    for k in pairs(near) do
+        if not far[k] then
+            S.BaseKeys[k] = true
+            keys[#keys + 1] = k
+        end
+    end
+    S.BaseCenter = root
+    S.BaseRadiusLearned = math.max(maxd + 25, S.BaseRadius)
+    if not S.Base then S.Base = root end
+    return count, table.concat(keys, ", ")
 end
 
 local function carryingEgg(plr)
@@ -827,6 +883,28 @@ TabEgg:CreateButton({
     Name = "Dump Analisa (copy ke clipboard)",
     Callback = function() dumpInfo() end,
 })
+local function zoneOptions()
+    local opts = {}
+    for k, n in pairs(ZoneCounts) do opts[#opts + 1] = k .. " (" .. n .. ")" end
+    table.sort(opts)
+    if #opts == 0 then opts = {"(belum ada zona)"} end
+    return opts
+end
+local ZoneDropdown = TabEgg:CreateDropdown({
+    Name = "Zona Steal (kosong = semua di luar base)", Options = zoneOptions(),
+    CurrentOption = {}, MultipleOptions = true, Flag = "ZoneSel",
+    Callback = function(o)
+        S.AllowedZones = {}
+        for _, label in ipairs(type(o) == "table" and o or {o}) do
+            local key = tostring(label):gsub(" %(%d+%)$", "")
+            if key ~= "None" and not key:find("belum ada zona", 1, true) then S.AllowedZones[key] = true end
+        end
+    end,
+})
+TabEgg:CreateButton({
+    Name = "Refresh Daftar Zona",
+    Callback = function() ZoneDropdown:Refresh(zoneOptions()) end,
+})
 TabEgg:CreateDropdown({
     Name = "Mode Gerak", Options = {"Teleport", "Tween Cepat", "Jalan"},
     CurrentOption = {"Teleport"}, MultipleOptions = false, Flag = "MoveMode",
@@ -912,6 +990,17 @@ TabSet:CreateButton({
     Callback = function()
         S.Base = hrp().Position
         Rayfield:Notify({Title = "LIXX EGG", Content = "Base tersimpan.", Duration = 3})
+    end,
+})
+TabSet:CreateButton({
+    Name = "Kalibrasi Base (berdiri di tengah base dulu)",
+    Callback = function()
+        local n, keys = calibrateBase()
+        Rayfield:Notify({
+            Title = "LIXX EGG",
+            Content = n .. " telur base dipelajari. Zona base: " .. (keys ~= "" and keys or "(pakai radius saja)"),
+            Duration = 7,
+        })
     end,
 })
 TabSet:CreateSlider({
