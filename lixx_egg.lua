@@ -17,6 +17,7 @@ local CONFIG = {
     PromptName = "CarryAreaEgg", -- nama ProximityPrompt untuk ambil telur (dari analisa game)
     ForestWait = 2,
     ScanInterval = 1,           -- detik antar scan analyzer
+    BaseNamePatterns = {"plot", "homestead"}, -- object dgn nama ini dianggap area base (diabaikan)
     Teleport = false,           -- false = jalan kaki (aman dari anti-teleport), true = teleport
 }
 
@@ -37,6 +38,7 @@ local httpRequest = (syn and syn.request) or (http and http.request) or http_req
 local S = {
     Steal = false, Speed = false, SpeedValue = 50, Duel = false, Notif = false,
     Forest = nil, Base = nil,
+    IgnoreBase = true, BaseRadius = 70, Mode = "Teleport", TweenSpeed = 300,
     Token = "", ChatId = "",
     History = {}, Busy = false,
 }
@@ -188,6 +190,24 @@ local function resolveRarity(owner)
     return "Unknown", "none"
 end
 
+local function isBaseEgg(e)
+    if S.Base and e.Part and (e.Part.Position - S.Base).Magnitude < (S.BaseRadius or 70) then return true end
+    local node = e.Obj
+    for _ = 1, 6 do
+        if not node or node == workspace then break end
+        local n = node.Name:lower()
+        for _, pat in ipairs(CONFIG.BaseNamePatterns) do
+            if n:find(pat) then return true end
+        end
+        if n == LP.Name:lower() or n == LP.DisplayName:lower() then return true end
+        for _, v in pairs(node:GetAttributes()) do
+            if v == LP.UserId or v == LP.Name or v == LP.DisplayName then return true end
+        end
+        node = node.Parent
+    end
+    return false
+end
+
 local function rescan()
     local found, byOwner = {}, {}
     local root = CONFIG.EggFolder or workspace
@@ -241,6 +261,7 @@ local function rescan()
             local o = e.Obj
             e.Part = partOf(o) or (o:IsA("Model") and o:FindFirstChildWhichIsA("BasePart", true)) or nil
             if not e.Part then return end
+            if S.IgnoreBase and isBaseEgg(e) then return end
             e.Prompt = e.Prompt or o:FindFirstChildWhichIsA("ProximityPrompt", true)
             if not e.Prompt and o.Parent and o.Parent ~= workspace and o.Parent:IsA("Model") then
                 e.Prompt = o.Parent:FindFirstChildWhichIsA("ProximityPrompt", true)
@@ -438,24 +459,52 @@ local function walkTo(pos, timeout, stopDist)
     return (hrp().Position - pos).Magnitude <= stopDist + 4
 end
 
+local TweenService = game:GetService("TweenService")
+
+local function moveTo(pos, timeout, stop)
+    if S.Mode == "Teleport" then
+        tp(pos)
+        return true
+    elseif S.Mode == "Tween Cepat" then
+        local root = hrp()
+        local dist = (root.Position - pos).Magnitude
+        local tw = TweenService:Create(root,
+            TweenInfo.new(math.max(dist / math.max(S.TweenSpeed, 50), 0.05), Enum.EasingStyle.Linear),
+            {CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))})
+        tw:Play()
+        tw.Completed:Wait()
+        return true
+    end
+    pcall(function() hum().WalkSpeed = S.SpeedValue end)
+    return walkTo(pos, timeout, stop)
+end
+
 local function runTo(part, timeout)
     if not part or not part.Parent then return false end
-    return walkTo(part.Position, timeout or 30, 7)
+    return moveTo(part.Position, timeout or 30, 7)
 end
 
 local function grab(e)
     local pr = e.Prompt
-    pcall(function() pr.HoldDuration = 0 end)
-    for _ = 1, 5 do
+    if not pr then return false end
+    pcall(function()
+        pr.HoldDuration = 0
+        pr.RequiresLineOfSight = false
+        pr.MaxActivationDistance = 30
+    end)
+    for _ = 1, 20 do
         if fireproximityprompt then fireproximityprompt(pr) end
-        task.wait(0.1)
-        if carryingEgg(LP) then return true end
+        task.wait(0.05)
+        if carryingEgg(LP) or not e.Obj.Parent or isInsideCharacter(e.Obj)
+            or not pr:IsDescendantOf(workspace) or not pr.Enabled then
+            return true
+        end
     end
     return carryingEgg(LP)
 end
 
 local function goTo(pos)
-    if CONFIG.Teleport then tp(pos) else walkTo(pos, 90, 6) end
+    moveTo(pos, 90, 6)
 end
 
 local function deliver()
@@ -489,7 +538,7 @@ end
 
 task.spawn(function()
     while true do
-        task.wait(0.5)
+        task.wait(0.1)
         if S.Steal and not S.Busy then
             local e = pickByPriority()
             if e then stealEgg(e) end
@@ -778,6 +827,20 @@ TabEgg:CreateButton({
     Name = "Dump Analisa (copy ke clipboard)",
     Callback = function() dumpInfo() end,
 })
+TabEgg:CreateDropdown({
+    Name = "Mode Gerak", Options = {"Teleport", "Tween Cepat", "Jalan"},
+    CurrentOption = {"Teleport"}, MultipleOptions = false, Flag = "MoveMode",
+    Callback = function(o) S.Mode = type(o) == "table" and o[1] or o end,
+})
+TabEgg:CreateSlider({
+    Name = "Kecepatan Tween", Range = {100, 1500}, Increment = 10, Suffix = " studs/s",
+    CurrentValue = 300, Flag = "TweenSpeed",
+    Callback = function(v) S.TweenSpeed = v end,
+})
+TabEgg:CreateToggle({
+    Name = "Abaikan telur di base", CurrentValue = true, Flag = "IgnoreBase",
+    Callback = function(v) S.IgnoreBase = v end,
+})
 TabEgg:CreateSlider({
     Name = "Speed Boost", Range = {16, 300}, Increment = 1, Suffix = " speed",
     CurrentValue = 50, Flag = "SpeedSlider",
@@ -850,6 +913,11 @@ TabSet:CreateButton({
         S.Base = hrp().Position
         Rayfield:Notify({Title = "LIXX EGG", Content = "Base tersimpan.", Duration = 3})
     end,
+})
+TabSet:CreateSlider({
+    Name = "Radius area base (diabaikan)", Range = {20, 300}, Increment = 5, Suffix = " studs",
+    CurrentValue = 70, Flag = "BaseRadius",
+    Callback = function(v) S.BaseRadius = v end,
 })
 
 ------------------------------------------------------------
