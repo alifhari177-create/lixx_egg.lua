@@ -43,6 +43,7 @@ local CONFIG = {
     BaseWait = 3,     -- detik diam di base setelah sampai
     ScanInterval = 1,
     MaxRetry = 15,
+    FlyMax = 1600,   -- kecepatan terbang maksimum; otomatis turun kalau server menahan
 }
 
 ------------------------------------------------------------
@@ -820,7 +821,8 @@ local function dumpInfo()
     runGC()
     local out = {"== LIXX EGG DUMP v5 ==",
         ("OnlyRoot=%s IgnoreBase=%s Terbang gagal=%d"):format(tostring(S.OnlyRoot), tostring(S.IgnoreBase), FlyFails),
-        ("Lolos filter: %d | Semua prompt: %d"):format(#EggCache, #AllCache)}
+        ("Lolos filter: %d | Semua prompt: %d"):format(#EggCache, #AllCache),
+        "Deteksi ambil terakhir: " .. tostring(S.LastPick) .. " | Terbang terakhir: " .. tostring(S.LastFly)}
     local rec, fb = 0, 0
     for _, e in ipairs(AllCache) do
         if e.Src == "record" then rec += 1 else fb += 1 end
@@ -1103,12 +1105,12 @@ local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
 -- lari lurus dengan kecepatan player (dipaksa lewat velocity supaya tidak melambat)
-local function stepRun(tpos)
+local function stepRun(tpos, speedOverride)
     local root, h = hrp(), hum()
     local flat = Vector3.new(tpos.X - root.Position.X, 0, tpos.Z - root.Position.Z)
     if flat.Magnitude <= 2.5 then return end
     local dir = flat.Unit
-    local speed = S.SpeedValue
+    local speed = speedOverride or S.SpeedValue
     h.WalkSpeed = speed
     h:MoveTo(tpos)
     local v = root.AssemblyLinearVelocity
@@ -1180,43 +1182,83 @@ local function firePrompt(e)
     if fireproximityprompt then pcall(fireproximityprompt, pr) end
 end
 
--- telur sudah terambil? telur yang diambil NEMPEL & MENGIKUTI kita, jadi tidak boleh dikejar lagi
+-- model telur asli (diberi nama Uid) supaya gerakannya bisa dipantau
+local function findEggModel(e)
+    local uid = e.Record and rawget(e.Record, "Uid")
+    if type(uid) == "string" then
+        local ok, m = pcall(function() return workspace:FindFirstChild(uid, true) end)
+        if ok and m then return m end
+    end
+    local nl = nearbyNodes(e.Part)
+    for _, x in ipairs(nl) do
+        if x:IsA("Model") and isUid(x.Name) then return x end
+    end
+    return nil
+end
+
+local function prepareEgg(e)
+    e.Home = e.Part.Position
+    e.Model = e.Model or findEggModel(e)
+    e.ModelHome, e.ModelParent0, e.ModelFollowed = nil, nil, false
+    if e.Model then
+        e.ModelParent0 = e.Model.Parent
+        local ok, pv = pcall(function() return e.Model:GetPivot().Position end)
+        if ok then e.ModelHome = pv end
+    end
+end
+
+-- telur sudah terambil? return ok, state, nama sinyal
 local function pickedUp(e, before, enabled0)
     if e.Record and e.State0 ~= nil then
         local st = rawget(e.Record, "State")
-        if st ~= nil and st ~= e.State0 then return true, st end
+        if st ~= nil and st ~= e.State0 then return true, st, "status-record" end
+    end
+    local m = e.Model
+    if m then
+        if not m.Parent then return true, nil, "model-hilang" end
+        if m.Parent ~= e.ModelParent0 then return true, nil, "model-pindah-parent" end
+        local ok, pv = pcall(function() return m:GetPivot().Position end)
+        if ok and e.ModelHome and (pv - e.ModelHome).Magnitude > 3.5 then
+            e.ModelFollowed = true
+            return true, nil, "model-bergerak"
+        end
     end
     if e.Part and e.Part.Parent and e.Home and (e.Part.Position - e.Home).Magnitude > 3.5 then
-        return true
+        return true, nil, "part-bergerak"
     end
     if enabled0 and e.Prompt and (not e.Prompt:IsDescendantOf(workspace) or not e.Prompt.Enabled) then
-        return true
+        return true, nil, "prompt-mati"
     end
-    if before and #newCarried(before) > 0 then return true end
-    return carryingEgg(LP)
+    if before and #newCarried(before) > 0 then return true, nil, "objek-baru" end
+    if carryingEgg(LP) then return true, nil, "nama-egg" end
+    return false
 end
 
 local function chaseAndGrab(e0)
     local cur = e0
-    cur.Home = cur.Home or cur.Part.Position
+    prepareEgg(cur)
     local dist0 = (e0.Part.Position - hrp().Position).Magnitude
     local limit = math.clamp(dist0 / math.max(S.SpeedValue, 16) * 1.6 + 15, 25, 150)
-    local t0, lastFire, fires = tick(), 0, 0
+    local t0, lastFire, closeFires = tick(), 0, 0
     local before, enabled0
     while tick() - t0 < limit and not S.Abort and RUN.on do
         if not cur.Part or not cur.Part.Parent then
-            if before and tick() - lastFire < 0.6 then return true, cur, before end
+            if before and tick() - lastFire < 0.6 then
+                S.LastPick = "part-hilang"
+                return true, cur, before
+            end
             local nx = relocate(cur)
             if not nx then return false end
             nx.OrigPos, nx.Known = cur.OrigPos, cur.Known
-            nx.Home = nx.Part.Position
+            prepareEgg(nx)
             cur = nx
-            before, enabled0, fires = nil, nil, 0
+            before, enabled0, closeFires = nil, nil, 0
         end
         local root = hrp()
         local tpos = cur.Part.Position
         cur.LastPos = tpos
-        if (tpos - root.Position).Magnitude <= 26 then
+        local dist = (tpos - root.Position).Magnitude
+        if dist <= 26 then
             if not before then
                 before = snapChar()
                 enabled0 = cur.Prompt and cur.Prompt.Enabled
@@ -1224,15 +1266,20 @@ local function chaseAndGrab(e0)
             end
             if tick() - lastFire >= 0.12 then
                 lastFire = tick()
-                fires += 1
+                if dist <= 14 then closeFires += 1 end
                 firePrompt(cur)
             end
-            local ok, st = pickedUp(cur, before, enabled0)
+            local ok, st, sig = pickedUp(cur, before, enabled0)
             if ok then
                 if st ~= nil then cur.CarryState = st end
+                S.LastPick = sig
                 return true, cur, before
             end
-            if fires > 40 then return false end
+            -- pengaman: sudah beberapa kali ditekan dari jarak dekat = anggap terambil, JANGAN muter-muter di dekat penjaga
+            if closeFires >= 5 then
+                S.LastPick = "diasumsikan"
+                return true, cur, before
+            end
         end
         stepRun(tpos)
         task.wait()
@@ -1296,7 +1343,8 @@ local function stopFake()
     S.Abort = false
 end
 
--- terbang LURUS & cepat. return arrived, alasan ("arrived" | "abort" | "stuck" | "timeout")
+-- terbang LURUS & secepat mungkin. Kecepatan otomatis turun kalau server menahan (rubberband),
+-- jadi selalu menemukan kecepatan tertinggi yang diterima. return arrived, alasan
 local function flyLeg(pos, abortFn)
     local root, h = hrp(), hum()
     local parts, orig = {}, {}
@@ -1314,10 +1362,12 @@ local function flyLeg(pos, abortFn)
     h.PlatformStand = true
     S.Flying = true
     local target = pos + Vector3.new(0, 3, 0)
+    local spd = math.min(CONFIG.FlyMax, (S.FlyGood or CONFIG.FlyMax) * 2)
+    local spd0 = spd
     local t0 = tick()
     local arrived, why = false, "timeout"
-    local bestD, lastProg = math.huge, tick()
-    while tick() - t0 < 90 do
+    local checkT, checkD = tick(), (target - root.Position).Magnitude
+    while tick() - t0 < 60 do
         if S.Abort or not RUN.on then
             why = "abort"
             break
@@ -1336,25 +1386,32 @@ local function flyLeg(pos, abortFn)
             arrived, why = true, "arrived"
             break
         end
-        if d < bestD - 4 then
-            bestD = d
-            lastProg = tick()
-        elseif tick() - lastProg > 2.5 then
-            why = "stuck"
-            break
-        end
-        bv.Velocity = diff.Unit * math.min(S.FlySpeed, math.max(d * 20, 30))
-        local j = 1.2
-        root.CFrame = CFrame.new(root.Position + Vector3.new(
-            (math.random() - 0.5) * j, (math.random() - 0.5) * j, (math.random() - 0.5) * j))
-            * CFrame.Angles(math.random() * 6.28, math.random() * 6.28, math.random() * 6.28)
+        local v = diff.Unit * math.min(spd, math.max(d * 20, 30))
+        -- efek glitch halus lewat noise kecepatan (tanpa memutar karakter)
+        v = v + Vector3.new((math.random() - 0.5) * 30, (math.random() - 0.5) * 30, (math.random() - 0.5) * 30)
+        bv.Velocity = v
         for i = 1, #parts do parts[i].CanCollide = false end
         if FakeHum then
             local cam = workspace.CurrentCamera
             if cam.CameraSubject ~= FakeHum then cam.CameraSubject = FakeHum end
         end
+        -- governor: tiap 0.5 detik cek kemajuan nyata; kalau ditahan server, turunkan kecepatan
+        if tick() - checkT >= 0.5 then
+            local progressed = checkD - d
+            local expected = math.min(spd, math.max(d * 20, 30)) * 0.5
+            if progressed < expected * 0.3 then
+                spd = spd * 0.5
+                if spd < 40 then
+                    why = "stuck"
+                    break
+                end
+            end
+            checkT, checkD = tick(), d
+        end
         task.wait()
     end
+    if arrived then S.FlyGood = spd end
+    S.LastFly = ("mulai=%d akhir=%d hasil=%s"):format(spd0, spd, why)
     pcall(function() bv.Velocity = Vector3.zero end)
     pcall(function() bv:Destroy() end)
     S.Flying = false
@@ -1366,8 +1423,6 @@ local function flyLeg(pos, abortFn)
         root.AssemblyLinearVelocity = Vector3.zero
         if arrived then
             root.CFrame = CFrame.new(target)
-        else
-            root.CFrame = CFrame.new(root.Position)
         end
     end
     return arrived, why
@@ -1382,7 +1437,7 @@ local function runLeg(pos, abortFn)
         if S.Abort then return false, "abort" end
         if abortFn and abortFn() then return false, "abort" end
         if (hrp().Position - pos).Magnitude <= 8 then return true, "arrived" end
-        stepRun(pos)
+        stepRun(pos, math.max(S.SpeedValue, 150))
         task.wait()
     end
     return (hrp().Position - pos).Magnitude <= 12, "timeout"
@@ -1410,8 +1465,8 @@ local function isFreeState(st, st0)
         or l:find("ground", 1, true) or l:find("loose", 1, true)) ~= nil
 end
 
--- telur dianggap lepas HANYA kalau status Record kembali ke slot/jatuh,
--- atau (tanpa record) objek telur hilang dari karakter DAN darah berkurang
+-- telur dianggap lepas HANYA kalau terbukti: status Record kembali ke slot/jatuh,
+-- atau model telur (yang tadi ikut kita) balik ke slot asalnya, atau (tanpa itu) objek hilang DAN darah berkurang
 local function lostWatcher(e)
     local t0 = tick()
     local since
@@ -1424,6 +1479,13 @@ local function lostWatcher(e)
         if e.Record and e.CarryState ~= nil then
             local st = rawget(e.Record, "State")
             if st ~= e.CarryState and isFreeState(st, e.State0) then lostNow = true end
+        elseif e.Model and e.ModelFollowed and e.ModelHome then
+            local ok, pv = pcall(function() return e.Model:GetPivot().Position end)
+            local root = c and c:FindFirstChild("HumanoidRootPart")
+            if ok and root and (pv - e.ModelHome).Magnitude < 3
+                and (root.Position - e.ModelHome).Magnitude > 25 then
+                lostNow = true
+            end
         elseif e.Carried and #e.Carried > 0 and h and h.Health < hp0 - 0.5 then
             if not holding(e) then lostNow = true end
         end
@@ -2134,11 +2196,6 @@ TabEgg:CreateToggle({
         S.Speed = v
         if not v then pcall(function() hum().WalkSpeed = 16 end) end
     end,
-})
-TabEgg:CreateSlider({
-    Name = "Kecepatan Terbang ke Base (bawa telur)", Range = {100, 1000}, Increment = 10, Suffix = " studs/s",
-    CurrentValue = 450, Flag = "FlySpeed",
-    Callback = function(v) S.FlySpeed = v end,
 })
 TabEgg:CreateToggle({
     Name = "Visual lokal: kamera diam di base saat terbang (eksperimen)", CurrentValue = false, Flag = "FakeVisual",
