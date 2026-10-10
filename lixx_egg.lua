@@ -1,8 +1,25 @@
 --[[
-    LIXX EGG v4 - Steal an Egg
+    LIXX EGG v5 - Steal an Egg
     UI   : Rayfield
     Menu : Auto Egg | History Egg | Duel Player | Notifikasi | Setting
 ]]
+
+------------------------------------------------------------
+-- SATU INSTANCE SAJA (execute ulang = script lama dimatikan dulu)
+------------------------------------------------------------
+local genv = (getgenv and getgenv()) or _G
+if genv.LIXX_EGG_STOP then pcall(genv.LIXX_EGG_STOP) end
+local RUN = {on = true}
+local StopHooks, Conns = {}, {}
+genv.LIXX_EGG_STOP = function()
+    RUN.on = false
+    for _, c in ipairs(Conns) do pcall(function() c:Disconnect() end) end
+    for _, f in ipairs(StopHooks) do pcall(f) end
+end
+local function track(conn)
+    Conns[#Conns + 1] = conn
+    return conn
+end
 
 ------------------------------------------------------------
 -- CONFIG
@@ -12,6 +29,7 @@ local CONFIG = {
     EggFolder = nil,
     EggNamePattern = "egg",
     TargetRarities = {"Divine", "Eternal", "Secret"}, -- prioritas auto steal
+    -- urutan: paling bagus di atas
     PanelOrder = {"Divine", "Eternal", "Secret", "Cosmic", "Mythic", "Exotic", "Exclusive", "Limited",
         "Squishy God", "Rainbow", "Celestial", "Legendary", "SuperRare", "Epic", "Rare", "Uncommon", "Common"},
     ClubPattern = {"club", "bat", "wood", "stick", "pentung"},
@@ -24,7 +42,7 @@ local CONFIG = {
     ForestWait = 2,   -- detik berhenti di Forest
     BaseWait = 3,     -- detik diam di base setelah sampai
     ScanInterval = 1,
-    MaxRetry = 15,    -- maksimal ulang ambil telur yang sama
+    MaxRetry = 15,
 }
 
 ------------------------------------------------------------
@@ -42,7 +60,7 @@ local httpRequest = (syn and syn.request) or (http and http.request) or http_req
 -- STATE
 ------------------------------------------------------------
 local S = {
-    Steal = false, Speed = false, SpeedValue = 70, FlySpeed = 450, FakeVisual = true,
+    Steal = false, Speed = false, SpeedValue = 70, FlySpeed = 450, FakeVisual = false,
     Duel = false, Notif = false, GCScan = true,
     AntiHit = false, AntiTrap = false, Flying = false,
     Forest = nil, Base = nil, BaseRadius = 70,
@@ -62,10 +80,16 @@ do
     local parent
     local ok, r = pcall(function() return gethui and gethui() end)
     if ok and r then parent = r end
-    if not pcall(function() Gui.Parent = parent or game:GetService("CoreGui") end) or not Gui.Parent then
+    parent = parent or game:GetService("CoreGui")
+    pcall(function()
+        local old = parent:FindFirstChild("LIXX_EGG_GUI")
+        if old then old:Destroy() end
+    end)
+    if not pcall(function() Gui.Parent = parent end) or not Gui.Parent then
         Gui.Parent = LP:WaitForChild("PlayerGui")
     end
 end
+StopHooks[#StopHooks + 1] = function() Gui:Destroy() end
 
 local function showError(msg)
     warn("[LIXX EGG] " .. tostring(msg))
@@ -170,7 +194,7 @@ local function fmtVal(v)
 end
 
 ------------------------------------------------------------
--- DATA GAME: ReplicatedStorage.Data.Assets.Directory (data hewan: Rarity, Icon, ModelWeight, dst)
+-- DATA GAME: ReplicatedStorage.Data.Assets.Directory
 ------------------------------------------------------------
 local AssetsDir
 local function getDir()
@@ -251,6 +275,9 @@ local DataCache = {}
 local GCRecs = {}
 local Failed = {}
 local GCRunning = false
+local lastGC = -999
+local FakeChar, FakeHum
+local FlyFails = 0
 
 local function findData(name)
     local c = DataCache[name]
@@ -261,7 +288,6 @@ local function findData(name)
     return v
 end
 
--- wilayah: cari object bernama area (Snow, Volcano, dst), ambil yang terdekat
 local Anchors, lastAnchor = {}, -999
 local function scanAnchors()
     local list = {}
@@ -298,7 +324,6 @@ local function areaOf(pos)
     return ("%d, %d, %d"):format(pos.X, pos.Y, pos.Z)
 end
 
--- objek di sekitar part prompt (visual telur / slot telur ada di sini)
 local nearParams = OverlapParams.new()
 nearParams.FilterType = Enum.RaycastFilterType.Exclude
 
@@ -341,8 +366,13 @@ local function nearbyNodes(part)
     return list, seen
 end
 
+local function isUid(name)
+    return #name == 32 and not name:find("%X")
+end
+
 ------------------------------------------------------------
--- BACA DATA DARI MEMORI GAME (getgc): cari tabel yang MENUNJUK part/prompt telur ini
+-- BACA DATA DARI MEMORI GAME (getgc)
+-- Sumber utama: tabel "Record" milik tiap telur (AssetCategory, AreaId, NestId, Uid, ...)
 ------------------------------------------------------------
 local function addRec(recs, key, t)
     local l = recs[key]
@@ -350,17 +380,26 @@ local function addRec(recs, key, t)
         l = {}
         recs[key] = l
     end
-    if #l < 4 then l[#l + 1] = t end
+    if #l < 6 then l[#l + 1] = t end
 end
 
 local function gcScan(items)
     if not getgc or #items == 0 then return end
-    local set = {}
+    local set, uidMap = {}, {}
     for _, e in ipairs(items) do
         set[e.Part] = e.Part
         if e.Prompt then set[e.Prompt] = e.Part end
+        local nl = nearbyNodes(e.Part)
+        for _, x in ipairs(nl) do
+            if x:IsA("Model") and isUid(x.Name) then
+                uidMap[x.Name] = e.Part
+                set[x] = e.Part
+                e.Uid = x.Name
+                break
+            end
+        end
     end
-    local skip = {[set] = true, [Prompts] = true, [OwnerCache] = true, [InfoCache] = true,
+    local skip = {[set] = true, [uidMap] = true, [Prompts] = true, [OwnerCache] = true, [InfoCache] = true,
         [AdorneeMap] = true, [GCRecs] = true, [EggCache] = true, [AllCache] = true, [Failed] = true,
         [DataCache] = true}
     local recs = {}
@@ -371,6 +410,8 @@ local function gcScan(items)
                 count += 1
                 if count % 12000 == 0 then task.wait() end
                 if rawget(t, "Src") == nil and rawget(t, "Obj") == nil then
+                    local u = rawget(t, "Uid")
+                    if type(u) == "string" and uidMap[u] then addRec(recs, uidMap[u], t) end
                     local n = 0
                     for k, v in next, t do
                         n += 1
@@ -390,57 +431,63 @@ local function gcScan(items)
     if ok then GCRecs = recs end
 end
 
-local function applyRecord(info, rec, depth)
-    if type(rec) ~= "table" or depth > 2 then return end
+local function findAsset(t, depth)
+    if type(t) ~= "table" or depth > 3 then return nil end
+    if type(rawget(t, "AssetCategory")) == "string" then return t end
     local n = 0
-    for k, v in pairs(rec) do
+    for _, v in next, t do
         n += 1
-        if n > 80 then break end
-        local lk = tostring(k):lower()
-        local tv = type(v)
-        if tv == "table" then
-            if lk:find("rarity") then
-                local dn = rawget(v, "DisplayName") or rawget(v, "Name")
-                if dn then info.Rarity = info.Rarity or normRarity(dn) end
-            end
-            applyRecord(info, v, depth + 1)
-        elseif tv == "string" or tv == "number" then
-            local sv = fmtVal(v)
-            local ent = tv == "string" and entryOf(sv) or nil
-            if ent then
-                applyEntry(info, ent, sv)
-            elseif lk:find("rarity") or lk:find("tier") then
-                if tv == "string" then info.Rarity = info.Rarity or normRarity(sv) end
-            elseif lk:find("weight") or lk:find("mass") then
-                info.Weight = info.Weight or sv
-            elseif lk:find("price") or lk:find("cost") or lk:find("worth") then
-                info.Price = info.Price or sv
-            elseif lk:find("size") or lk:find("scale") then
-                info.SizeAttr = info.SizeAttr or sv
-            elseif lk:find("area") or lk:find("zone") or lk:find("biome") or lk:find("region") then
-                if tv == "string" then info.Area = info.Area or sv end
-            elseif lk:find("image") or lk:find("icon") or lk:find("thumb") then
-                info.Image = info.Image or (tv == "number" and ("rbxassetid://" .. sv) or sv)
-            elseif lk:find("pet") or lk:find("content") or lk:find("reward") then
-                info.Content = info.Content or sv
-            elseif tv == "string" and (lk:find("category") or lk:find("species") or lk:find("type")) then
-                info.Type = info.Type or sv
-            end
+        if n > 30 then break end
+        if type(v) == "table" then
+            local r = findAsset(v, depth + 1)
+            if r then return r end
         end
     end
+    return nil
+end
+
+local function findRecordFor(part)
+    local recs = part and GCRecs[part]
+    if not recs then return nil end
+    for _, r in ipairs(recs) do
+        local R = findAsset(r, 0)
+        if R then return R end
+    end
+    return nil
+end
+
+local function fillFromRecord(info, R)
+    local cat = rawget(R, "AssetCategory")
+    local ent = entryOf(cat)
+    if ent then
+        applyEntry(info, ent, cat)
+    else
+        info.Name = cat
+        info.Content = cat
+        info.Type = "Egg"
+    end
+    local area = rawget(R, "AreaId")
+    if type(area) == "string" and area ~= "" then info.Area = area end
+    local nest = rawget(R, "NestId")
+    if type(nest) == "string" then info.Slot = nest end
+    local sc = rawget(R, "AssetScale")
+    if type(sc) == "number" then info.SizeAttr = ("%.2f"):format(sc) end
+    local muts = rawget(R, "Mutations")
+    if type(muts) == "table" then
+        local names = {}
+        for k, v in pairs(muts) do
+            names[#names + 1] = type(v) == "string" and v or tostring(k)
+        end
+        if #names > 0 then info.Mutation = table.concat(names, ", ") end
+    end
+    info.Src = "record"
 end
 
 ------------------------------------------------------------
 -- RESOLVE INFO TELUR
 ------------------------------------------------------------
-local function resolveInfo(owner, prompt)
-    local c = InfoCache[owner]
-    if c and tick() - c.T < 5 then return c end
-
-    local info = {T = tick(), Src = ""}
-    local part = partOf(owner)
-
-    -- 1) teks prompt (ObjectText / ActionText)
+-- cadangan kalau Record belum terbaca (tanpa mencocokkan nama objek sekitar: itu yang bikin semua jadi Cerberus)
+local function legacyResolve(info, owner, prompt, part)
     if prompt then
         local ot, at = "", ""
         pcall(function()
@@ -449,33 +496,14 @@ local function resolveInfo(owner, prompt)
         end)
         info.PromptText = tostring(ot) .. " | " .. tostring(at)
         for _, t in ipairs({ot, at}) do
-            t = cleanText(t)
-            if #t > 0 then
-                local ent = entryOf(t)
-                if ent then
-                    applyEntry(info, ent, t)
-                    info.Src = info.Src .. "prompt:data "
-                end
-                local rr = matchRarity(t)
-                if rr then
-                    info.Rarity = info.Rarity or rr
-                    info.Src = info.Src .. "prompt:rarity "
-                end
+            local tt = cleanText(t)
+            if #tt > 0 then
+                local rr = matchRarity(tt)
+                if rr then info.Rarity = info.Rarity or rr end
             end
         end
-        local o2 = cleanText(ot)
-        if #o2 > 0 and #o2 <= 40 then info.EggLabel = o2 end
     end
-
-    -- 2) kumpulkan node: egg, sekitar egg, GUI yang menempel
     local nodes = {owner}
-    local a = owner.Parent
-    for _ = 1, 2 do
-        if a and a ~= workspace and a ~= game then
-            nodes[#nodes + 1] = a
-            a = a.Parent
-        end
-    end
     local n = 0
     for _, d in ipairs(owner:GetDescendants()) do
         n += 1
@@ -484,7 +512,6 @@ local function resolveInfo(owner, prompt)
     end
     local nearList, nearSet = nearbyNodes(part)
     for _, x in ipairs(nearList) do nodes[#nodes + 1] = x end
-
     local base = #nodes
     for idx = 1, base do
         local gl = AdorneeMap[nodes[idx]]
@@ -497,128 +524,54 @@ local function resolveInfo(owner, prompt)
                     if cnt > 40 then break end
                     nodes[#nodes + 1] = dd
                 end
-                info.Src = info.Src .. "gui "
             end
         end
     end
-    if #owner.Name >= 4 and owner.Name ~= "SmartPromptPart" and (owner.Name:find("%d") or #owner.Name >= 12) then
-        local ex = findData(owner.Name)
-        if ex then
-            info.Src = info.Src .. "RS:" .. ex.Name .. " "
-            nodes[#nodes + 1] = ex
-            local cnt = 0
-            for _, dd in ipairs(ex:GetDescendants()) do
-                cnt += 1
-                if cnt > 40 then break end
-                nodes[#nodes + 1] = dd
-            end
-        end
-    end
-
-    -- 3) baca nilai dari semua node
     for _, node in ipairs(nodes) do
         for k, v in pairs(node:GetAttributes()) do
             local lk = tostring(k):lower()
-            if not info.Area and type(v) == "string" and v ~= ""
-                and (lk:find("area") or lk:find("zone") or lk:find("biome") or lk:find("world")
-                    or lk:find("location") or lk:find("region")) then
-                info.Area = v
-            end
-            if type(v) ~= "table" then
-                if not info.Weight and (lk:find("weight") or lk:find("mass")) then info.Weight = fmtVal(v) end
-                if not info.Price and (lk:find("price") or lk:find("cost") or lk:find("worth")) then
-                    info.Price = fmtVal(v)
-                end
-                if not info.SizeAttr and (lk:find("size") or lk:find("scale")) then info.SizeAttr = fmtVal(v) end
-                if not info.Type and type(v) == "string"
-                    and (lk:find("type") or lk:find("species") or lk:find("category")) then
-                    info.Type = v
-                end
-            end
             if type(v) == "string" and v ~= "" then
-                local ent = entryOf(v)
-                if ent then
-                    applyEntry(info, ent, v)
-                    info.Src = info.Src .. "assets:" .. v .. " "
-                elseif lk:find("rarity") or lk:find("tier") then
-                    info.Rarity = info.Rarity or normRarity(v)
-                    info.Src = info.Src .. "attr:" .. tostring(k) .. " "
-                elseif lk:find("pet") or lk:find("content") then
-                    info.Content = info.Content or v
-                elseif lk:find("name") then
-                    info.Name = info.Name or v
+                if not nearSet[node] then
+                    local ent = entryOf(v)
+                    if ent then applyEntry(info, ent, v) end
                 end
-            elseif (lk:find("rarity") or lk:find("tier")) and v ~= nil and type(v) ~= "table" then
-                info.Rarity = info.Rarity or normRarity(v)
-            end
-        end
-        if node:IsA("ValueBase") then
-            local lk = node.Name:lower()
-            if lk:find("rarity") or lk:find("tier") then
-                info.Rarity = info.Rarity or normRarity(node.Value)
-                info.Src = info.Src .. "value "
-            elseif lk:find("weight") or lk:find("mass") then
-                info.Weight = info.Weight or fmtVal(node.Value)
-            elseif lk:find("price") or lk:find("cost") or lk:find("worth") then
-                info.Price = info.Price or fmtVal(node.Value)
-            elseif type(node.Value) == "string" then
-                local ent = entryOf(node.Value)
-                if ent then applyEntry(info, ent, node.Value) end
+                if lk:find("rarity") or lk:find("tier") then info.Rarity = info.Rarity or normRarity(v) end
+                if not info.Area and (lk:find("area") or lk:find("zone") or lk:find("biome")) then info.Area = v end
             end
         end
         if node == owner or nearSet[node] then
-            local ent = entryOf(node.Name)
-            if ent then
-                applyEntry(info, ent, node.Name)
-                info.Src = info.Src .. "near:" .. node.Name .. " "
-            end
-            if node.Name:lower():find("egg", 1, true) then
-                local rn = matchRarity(node.Name)
-                if rn then
-                    info.Rarity = info.Rarity or rn
-                    info.Src = info.Src .. "near:rarity "
-                end
-                if node.Name ~= "SmartPromptPart" then info.EggLabel = info.EggLabel or node.Name end
-            end
             local sa, sn = node.Name:match("_([^_:]+):Slot_(%d+)$")
             if sa then
-                info.AreaFromSlot = sa
+                info.Area = info.Area or sa
                 info.Slot = sn
             end
         end
-    end
-
-    -- 4) data dari memori game
-    local recs = GCRecs[part]
-    if recs then
-        info.Src = info.Src .. "gc "
-        for _, r in ipairs(recs) do pcall(applyRecord, info, r, 0) end
-    end
-
-    -- 5) teks & gambar GUI
-    for _, node in ipairs(nodes) do
         if node:IsA("TextLabel") then
             local t = cleanText(node.Text)
-            if #t > 0 then
-                local r = matchRarity(t)
-                if r then
-                    info.Rarity = info.Rarity or r
-                    info.Src = info.Src .. "text "
-                elseif not info.Name and not t:find("^[%d%p%s]+$") then
-                    info.Name = t
-                end
-            end
+            local r = matchRarity(t)
+            if r then info.Rarity = info.Rarity or r end
         elseif node:IsA("ImageLabel") and node.Image ~= "" then
             info.Image = info.Image or node.Image
         end
     end
+    info.Src = "fallback"
+end
 
+local function resolveInfo(owner, prompt)
+    local c = InfoCache[owner]
+    if c and tick() - c.T < 5 then return c end
+    local info = {T = tick(), Src = ""}
+    local part = partOf(owner)
+    local R = findRecordFor(part)
+    if R then
+        fillFromRecord(info, R)
+    else
+        legacyResolve(info, owner, prompt, part)
+    end
     info.Rarity = info.Rarity or "Unknown"
     if not info.Name then
-        if info.EggLabel then
-            info.Name = info.EggLabel
-        elseif info.Slot then
-            info.Name = ("Egg %s #%s"):format(info.AreaFromSlot or "?", info.Slot)
+        if info.Slot then
+            info.Name = ("Egg %s %s"):format(info.Area or "?", info.Slot)
         else
             info.Name = "Egg"
         end
@@ -636,8 +589,8 @@ local PromptRoot = CONFIG.EggFolder or workspace
 local function trackPrompt(d)
     if d:IsA("ProximityPrompt") and d.Name == CONFIG.PromptName then Prompts[d] = true end
 end
-PromptRoot.DescendantAdded:Connect(trackPrompt)
-PromptRoot.DescendantRemoving:Connect(function(d) Prompts[d] = nil end)
+track(PromptRoot.DescendantAdded:Connect(trackPrompt))
+track(PromptRoot.DescendantRemoving:Connect(function(d) Prompts[d] = nil end))
 task.spawn(function()
     local i = 0
     for _, d in ipairs(PromptRoot:GetDescendants()) do
@@ -741,13 +694,9 @@ local function rescan()
             e.Rarity, e.Name, e.Image = info.Rarity, info.Name, info.Image
             e.Content, e.Src, e.PromptText = info.Content, info.Src, info.PromptText
             e.Type, e.Weight, e.Price = info.Type or "-", info.Weight or "-", info.Price or "-"
-            e.SizeAttr = info.SizeAttr
-            local okS, sz = pcall(function()
-                if o:IsA("Model") then return o:GetExtentsSize() end
-                return e.Part.Size
-            end)
-            e.Size = (okS and sz) and ("%.1f x %.1f x %.1f"):format(sz.X, sz.Y, sz.Z) or "-"
-            e.Area = info.Area or info.AreaFromSlot or areaOf(e.Part.Position)
+            e.PriceNum = tonumber(info.Price) or 0
+            e.SizeAttr, e.Mutation, e.Slot = info.SizeAttr, info.Mutation, info.Slot
+            e.Area = info.Area or areaOf(e.Part.Position)
             all[#all + 1] = e
             if S.OnlyRoot and e.Zone ~= "(root)" then return end
             if S.IgnoreBase and isBaseEgg(e) then return end
@@ -755,16 +704,21 @@ local function rescan()
             result[#result + 1] = e
         end)
     end
+    -- paling bagus di atas: Divine > Eternal > Secret > ... lalu income terbesar
     table.sort(result, function(a, b)
         local ra, rb = rankOf(a.Rarity), rankOf(b.Rarity)
         if ra ~= rb then return ra < rb end
-        return a.Name < b.Name
+        if a.PriceNum ~= b.PriceNum then return a.PriceNum > b.PriceNum end
+        if a.Name ~= b.Name then return a.Name < b.Name end
+        local pa, pb = a.Part.Position, b.Part.Position
+        if pa.X ~= pb.X then return pa.X < pb.X end
+        return pa.Z < pb.Z
     end)
     EggCache, AllCache, ZoneCounts = result, all, zc
 end
 
 task.spawn(function()
-    while true do
+    while RUN.on do
         local ok, err = pcall(rescan)
         if not ok then warn("[LIXX EGG] scan error: " .. tostring(err)) end
         if Banner then
@@ -782,7 +736,6 @@ task.spawn(function()
     end
 end)
 
-local lastGC = -999
 local function runGC()
     if not getgc or #AllCache == 0 or GCRunning then return end
     GCRunning = true
@@ -791,6 +744,26 @@ local function runGC()
     InfoCache = setmetatable({}, {__mode = "k"})
     GCRunning = false
 end
+
+-- baca data game otomatis: sekali di awal, lalu hanya kalau ada telur baru yang belum punya Record
+task.spawn(function()
+    task.wait(6)
+    local firstDone = false
+    while RUN.on do
+        if S.GCScan and getgc and #AllCache > 0 then
+            local missing = 0
+            for _, e in ipairs(AllCache) do
+                if e.Src ~= "record" then missing += 1 end
+            end
+            local want = (not firstDone) or (missing > 0 and (S.Steal or (PanelFrame and PanelFrame.Visible)))
+            if want and tick() - lastGC > 20 then
+                firstDone = true
+                runGC()
+            end
+        end
+        task.wait(3)
+    end
+end)
 
 ------------------------------------------------------------
 -- DUMP / KALIBRASI
@@ -808,108 +781,50 @@ local function describe(inst, depth)
         .. "} kids{" .. table.concat(kids, ",") .. "}"
 end
 
-local function dumpTable(t, out, indent, budget, depth)
-    if depth > 3 then return end
-    for k, v in pairs(t) do
-        if budget.n <= 0 then return end
-        budget.n -= 1
-        if type(v) == "table" then
-            out[#out + 1] = string.rep("  ", indent) .. tostring(k) .. " = {"
-            dumpTable(v, out, indent + 1, budget, depth + 1)
-            out[#out + 1] = string.rep("  ", indent) .. "}"
-        else
-            out[#out + 1] = string.rep("  ", indent) .. tostring(k) .. " = " .. tostring(v)
-        end
-    end
-end
-
-local function dumpFolder(name, out)
-    local f = workspace:FindFirstChild(name)
-    if not f then
-        out[#out + 1] = "FOLDER " .. name .. ": (tidak ada)"
-        return
-    end
-    local kids = f:GetChildren()
-    out[#out + 1] = ("FOLDER %s: %d anak | attr{%s}"):format(name, #kids, attrStr(f))
-    for i, c in ipairs(kids) do
-        if i > 5 then break end
-        out[#out + 1] = describe(c, 1)
-        local n = 0
-        for _, d in ipairs(c:GetDescendants()) do
-            n += 1
-            if n > 5 then break end
-            out[#out + 1] = describe(d, 2)
-        end
-    end
-end
-
 local function dumpInfo()
     if DumpBox then DumpBox.Text = "Memproses data game, tunggu beberapa detik..." end
     if DumpFrame then DumpFrame.Visible = true end
     runGC()
-    local out = {"== LIXX EGG DUMP v4 ==",
-        ("OnlyRoot=%s IgnoreBase=%s"):format(tostring(S.OnlyRoot), tostring(S.IgnoreBase)),
+    local out = {"== LIXX EGG DUMP v5 ==",
+        ("OnlyRoot=%s IgnoreBase=%s Terbang gagal=%d"):format(tostring(S.OnlyRoot), tostring(S.IgnoreBase), FlyFails),
         ("Lolos filter: %d | Semua prompt: %d"):format(#EggCache, #AllCache)}
-    out[#out + 1] = "-- ZONA (key = jumlah) --"
+    local rec, fb = 0, 0
+    for _, e in ipairs(AllCache) do
+        if e.Src == "record" then rec += 1 else fb += 1 end
+    end
+    out[#out + 1] = ("Sumber data: record=%d fallback=%d"):format(rec, fb)
+    out[#out + 1] = "-- ZONA --"
     for k, nn in pairs(ZoneCounts) do
         out[#out + 1] = ("%s = %d%s"):format(k, nn, S.BaseKeys[k] and "  [BASE]" or "")
     end
-    out[#out + 1] = "-- 6 telur pertama --"
-    for i, e in ipairs(AllCache) do
-        if i > 6 then break end
-        out[#out + 1] = ("[%d] pos=%d,%d,%d | rarity=%s | nama=%s | tipe=%s | berat=%s | income=%s | area=%s | src=%s | img=%s")
-            :format(i, e.Part.Position.X, e.Part.Position.Y, e.Part.Position.Z, e.Rarity, e.Name,
-                tostring(e.Type), tostring(e.Weight), tostring(e.Price), tostring(e.Area), e.Src, tostring(e.Image))
-        out[#out + 1] = "  prompt ObjectText|ActionText = " .. tostring(e.PromptText)
-        local recs = GCRecs[e.Part]
-        out[#out + 1] = "  gc rekaman = " .. tostring(recs and #recs or 0)
-        if recs then
-            for ri, r in ipairs(recs) do
-                out[#out + 1] = "  gc rekaman " .. ri .. ":"
-                dumpTable(r, out, 2, {n = 40}, 1)
-            end
+    out[#out + 1] = "-- 12 telur teratas (urutan panel) --"
+    for i, e in ipairs(EggCache) do
+        if i > 12 then break end
+        out[#out + 1] = ("[%d] %s | %s | tipe=%s | berat=%s | income=%s | wilayah=%s | slot=%s | mutasi=%s | src=%s | uid=%s")
+            :format(i, e.Name, e.Rarity, tostring(e.Type), tostring(e.Weight), tostring(e.Price),
+                tostring(e.Area), tostring(e.Slot), tostring(e.Mutation), e.Src, tostring(e.Uid))
+    end
+    local firstFb
+    for _, e in ipairs(AllCache) do
+        if e.Src ~= "record" then
+            firstFb = e
+            break
         end
-        local nl = nearbyNodes(e.Part)
-        out[#out + 1] = "  objek di sekitar (" .. #nl .. "):"
+    end
+    if firstFb then
+        out[#out + 1] = "-- contoh telur TANPA record --"
+        out[#out + 1] = tostring(firstFb.PromptText)
+        local nl = nearbyNodes(firstFb.Part)
         for ni, x in ipairs(nl) do
-            if ni > 14 then break end
-            out[#out + 1] = describe(x, 2)
-        end
-        local gl = AdorneeMap[e.Part]
-        if gl then
-            for _, g in ipairs(gl) do
-                out[#out + 1] = "  ADORNEE GUI: " .. g:GetFullName()
-                for _, dd in ipairs(g:GetDescendants()) do
-                    if dd:IsA("TextLabel") then out[#out + 1] = "    text: " .. cleanText(dd.Text) end
-                end
-            end
-        end
-    end
-    out[#out + 1] = "-- STRUKTUR FOLDER --"
-    for _, nm in ipairs({"AreaEggSlotsClient", "Eggs", "PlacedEggRenders", "ClientRenderedAssets", "_Guards", "Forest"}) do
-        dumpFolder(nm, out)
-    end
-    local dir = getDir()
-    if dir then
-        local cnt = 0
-        for k, v in pairs(dir) do
-            cnt += 1
-            if cnt > 4 then break end
-            local kv = {}
-            if type(v) == "table" then
-                for kk, vv in pairs(v) do
-                    kv[#kv + 1] = tostring(kk) .. "=" .. tostring(vv)
-                    if #kv >= 14 then break end
-                end
-            end
-            out[#out + 1] = "DIR " .. tostring(k) .. ": " .. table.concat(kv, ", ")
+            if ni > 10 then break end
+            out[#out + 1] = describe(x, 1)
         end
     end
     local c = LP.Character
     if c then
         local kids = {}
         for _, k in ipairs(c:GetChildren()) do kids[#kids + 1] = k.Name .. ":" .. k.ClassName end
-        out[#out + 1] = "karakter: " .. table.concat(kids, ",") .. " attr{" .. attrStr(c) .. "}"
+        out[#out + 1] = "karakter: " .. table.concat(kids, ",")
     end
     local txt = table.concat(out, "\n")
     if setclipboard then pcall(setclipboard, txt) end
@@ -957,7 +872,6 @@ local function carryingEgg(plr)
     return false
 end
 
--- deteksi telur yang kita bawa: bandingkan isi karakter sebelum & sesudah ambil
 local function snapChar()
     local s = {}
     local c = LP.Character
@@ -1063,6 +977,74 @@ local function addHistory(e)
 end
 
 ------------------------------------------------------------
+-- KONTROL AMAN: lepas semua kunci (kamera, terbang, kembaran) kapan saja
+------------------------------------------------------------
+local function releaseControl()
+    S.Abort = true
+    S.Flying = false
+    pcall(function()
+        for _, d in ipairs(workspace:GetChildren()) do
+            if d.Name == "LIXX_FAKE" then d:Destroy() end
+        end
+        FakeChar, FakeHum = nil, nil
+        local c = LP.Character
+        local h = c and c:FindFirstChildOfClass("Humanoid")
+        local cam = workspace.CurrentCamera
+        if h then
+            cam.CameraSubject = h
+            h.PlatformStand = false
+        end
+        if cam.CameraType == Enum.CameraType.Scriptable then cam.CameraType = Enum.CameraType.Custom end
+        local r = c and c:FindFirstChild("HumanoidRootPart")
+        if r then
+            for _, x in ipairs(r:GetChildren()) do
+                if x.Name == "LIXX_BV" then x:Destroy() end
+            end
+            r.AssemblyLinearVelocity = Vector3.zero
+            r.Anchored = false
+        end
+    end)
+end
+StopHooks[#StopHooks + 1] = releaseControl
+
+-- watchdog kamera: kalau kamera nyangkut ke kembaran / humanoid mati, kembalikan otomatis
+task.spawn(function()
+    while RUN.on do
+        task.wait(0.5)
+        pcall(function()
+            if FakeChar then return end
+            local cam = workspace.CurrentCamera
+            local sub = cam.CameraSubject
+            if sub and sub:IsA("Humanoid") then
+                local bad = (not sub.Parent) or sub.Parent.Name == "LIXX_FAKE"
+                if bad then
+                    local c = LP.Character
+                    local h = c and c:FindFirstChildOfClass("Humanoid")
+                    if h then cam.CameraSubject = h end
+                end
+            end
+            for _, d in ipairs(workspace:GetChildren()) do
+                if d.Name == "LIXX_FAKE" then d:Destroy() end
+            end
+        end)
+    end
+end)
+
+local function hookCharacter(c)
+    task.spawn(function()
+        local h = c:WaitForChild("Humanoid", 10)
+        if h then
+            track(h.Died:Connect(function() S.Abort = true end))
+        end
+    end)
+end
+track(LP.CharacterAdded:Connect(function(c)
+    releaseControl()
+    hookCharacter(c)
+end))
+if LP.Character then hookCharacter(LP.Character) end
+
+------------------------------------------------------------
 -- AMBIL TELUR
 ------------------------------------------------------------
 local lastDeliver = 0
@@ -1072,7 +1054,7 @@ local lastJump = 0
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
--- lari lurus ke target dengan kecepatan player (dipaksa lewat velocity supaya tidak melambat)
+-- lari lurus dengan kecepatan player (dipaksa lewat velocity supaya tidak melambat)
 local function stepRun(tpos)
     local root, h = hrp(), hum()
     local flat = Vector3.new(tpos.X - root.Position.X, 0, tpos.Z - root.Position.Z)
@@ -1113,7 +1095,7 @@ local function grab(e)
     return carryingEgg(LP)
 end
 
--- cari telur YANG SAMA (bukan telur lain): objek lama, slot asal, atau prompt baru di titik jatuh
+-- cari telur YANG SAMA: objek lama, slot asal, atau prompt baru di titik jatuh. Tidak pernah telur lain.
 local function relocate(e)
     if e.Part and e.Part.Parent and e.Prompt and e.Prompt:IsDescendantOf(workspace)
         and not isInsideCharacter(e.Obj) then
@@ -1141,12 +1123,11 @@ end
 
 local function chaseAndGrab(e0)
     local cur = e0
-    local lastPos = e0.Part.Position
-    local dist0 = (lastPos - hrp().Position).Magnitude
+    local dist0 = (e0.Part.Position - hrp().Position).Magnitude
     local limit = math.clamp(dist0 / math.max(S.SpeedValue, 16) * 1.6 + 15, 25, 150)
     local t0 = tick()
     local before
-    while tick() - t0 < limit and not S.Abort do
+    while tick() - t0 < limit and not S.Abort and RUN.on do
         if not cur.Part or not cur.Part.Parent then
             local nx = relocate(cur)
             if not nx then return false end
@@ -1155,7 +1136,6 @@ local function chaseAndGrab(e0)
         end
         local root = hrp()
         local tpos = cur.Part.Position
-        lastPos = tpos
         cur.LastPos = tpos
         if (tpos - root.Position).Magnitude <= 26 then
             before = before or snapChar()
@@ -1167,8 +1147,7 @@ local function chaseAndGrab(e0)
     return false
 end
 
--- visual lokal: kamera menempel ke "kembaran" kita yang diam di base
-local FakeChar, FakeHum
+-- visual lokal (opsional): kamera menempel ke kembaran yang diam di base
 local function startFake(basePos)
     if not S.FakeVisual then return end
     pcall(function()
@@ -1190,21 +1169,23 @@ local function startFake(basePos)
 end
 
 local function stopFake()
-    pcall(function()
-        if FakeChar then FakeChar:Destroy() end
-        FakeChar, FakeHum = nil, nil
-        workspace.CurrentCamera.CameraSubject = hum()
-    end)
+    FakeChar, FakeHum = nil, nil
+    releaseControl()
+    S.Abort = false
 end
 
--- terbang LURUS & sangat cepat (tampak glitch bagi player lain)
+-- terbang LURUS & cepat. return arrived, alasan ("arrived" | "abort" | "stuck" | "timeout")
 local function flyLeg(pos, abortFn)
     local root, h = hrp(), hum()
-    local parts = {}
+    local parts, orig = {}, {}
     for _, p in ipairs(char():GetDescendants()) do
-        if p:IsA("BasePart") then parts[#parts + 1] = p end
+        if p:IsA("BasePart") then
+            parts[#parts + 1] = p
+            orig[p] = p.CanCollide
+        end
     end
     local bv = Instance.new("BodyVelocity")
+    bv.Name = "LIXX_BV"
     bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
     bv.Velocity = Vector3.zero
     bv.Parent = root
@@ -1212,13 +1193,32 @@ local function flyLeg(pos, abortFn)
     S.Flying = true
     local target = pos + Vector3.new(0, 3, 0)
     local t0 = tick()
-    local arrived = false
-    while tick() - t0 < 90 and not S.Abort do
-        if abortFn and abortFn() then break end
+    local arrived, why = false, "timeout"
+    local bestD, lastProg = math.huge, tick()
+    while tick() - t0 < 90 do
+        if S.Abort or not RUN.on then
+            why = "abort"
+            break
+        end
+        if abortFn and abortFn() then
+            why = "abort"
+            break
+        end
+        if not root.Parent then
+            why = "abort"
+            break
+        end
         local diff = target - root.Position
         local d = diff.Magnitude
         if d < 6 then
-            arrived = true
+            arrived, why = true, "arrived"
+            break
+        end
+        if d < bestD - 4 then
+            bestD = d
+            lastProg = tick()
+        elseif tick() - lastProg > 2.5 then
+            why = "stuck"
             break
         end
         bv.Velocity = diff.Unit * math.min(S.FlySpeed, math.max(d * 20, 30))
@@ -1233,16 +1233,53 @@ local function flyLeg(pos, abortFn)
         end
         task.wait()
     end
-    bv.Velocity = Vector3.zero
-    bv:Destroy()
+    pcall(function() bv.Velocity = Vector3.zero end)
+    pcall(function() bv:Destroy() end)
     S.Flying = false
-    h.PlatformStand = false
-    root.AssemblyLinearVelocity = Vector3.zero
-    if arrived then root.CFrame = CFrame.new(target) end
-    return arrived
+    pcall(function() h.PlatformStand = false end)
+    for _, p in ipairs(parts) do
+        pcall(function() p.CanCollide = orig[p] end)
+    end
+    if root.Parent then
+        root.AssemblyLinearVelocity = Vector3.zero
+        if arrived then
+            root.CFrame = CFrame.new(target)
+        else
+            root.CFrame = CFrame.new(root.Position)
+        end
+    end
+    return arrived, why
 end
 
--- telur dianggap lepas HANYA kalau terkonfirmasi tidak menempel lagi selama > 0.8 detik
+-- lari lurus (cadangan kalau terbang diblokir / macet)
+local function runLeg(pos, abortFn)
+    local dist0 = (hrp().Position - pos).Magnitude
+    local limit = math.clamp(dist0 / math.max(S.SpeedValue, 16) * 1.6 + 15, 20, 180)
+    local t0 = tick()
+    while tick() - t0 < limit and RUN.on do
+        if S.Abort then return false, "abort" end
+        if abortFn and abortFn() then return false, "abort" end
+        if (hrp().Position - pos).Magnitude <= 8 then return true, "arrived" end
+        stepRun(pos)
+        task.wait()
+    end
+    return (hrp().Position - pos).Magnitude <= 12, "timeout"
+end
+
+-- terbang dulu; kalau macet 2x berturut-turut, pakai lari saja. Tidak pernah diam di jalan.
+local function moveLeg(pos, abortFn)
+    if FlyFails < 2 then
+        local ok, why = flyLeg(pos, abortFn)
+        if ok then
+            FlyFails = 0
+            return true, why
+        end
+        if why == "abort" then return false, why end
+        FlyFails += 1
+    end
+    return runLeg(pos, abortFn)
+end
+
 local function lostWatcher(e)
     local since
     local t0 = tick()
@@ -1279,7 +1316,7 @@ local function carryHome(e)
     startFake(S.Base)
     local ok = true
     if S.Forest then
-        ok = flyLeg(S.Forest, abort)
+        ok = moveLeg(S.Forest, abort)
         if ok then
             local w0 = tick()
             while tick() - w0 < CONFIG.ForestWait do
@@ -1294,7 +1331,7 @@ local function carryHome(e)
         HintShown = true
         showError("Forest belum di-set, langsung ke base (Setting > Set Posisi Forest)")
     end
-    if ok then ok = flyLeg(S.Base, abort) end
+    if ok then ok = moveLeg(S.Base, abort) end
 
     local status = "done"
     if ok then
@@ -1312,33 +1349,18 @@ local function carryHome(e)
     else
         status = "retry"
     end
+    local wasAbort = S.Abort
     stopFake()
+    S.Abort = wasAbort and not lost
     return status
-end
-
--- cadangan terakhir: lari lurus ke base supaya tidak pernah diam di jalan sambil bawa telur
-local function runHomeFallback(e)
-    if not S.Base then return "abort" end
-    local isLost = lostWatcher(e)
-    local dist0 = (hrp().Position - S.Base).Magnitude
-    local limit = math.clamp(dist0 / math.max(S.SpeedValue, 16) * 1.6 + 15, 20, 150)
-    local t0 = tick()
-    while tick() - t0 < limit and not S.Abort do
-        if (hrp().Position - S.Base).Magnitude <= 8 then break end
-        if isLost() then
-            e.LostPos = hrp().Position
-            return "lost"
-        end
-        stepRun(S.Base)
-        task.wait()
-    end
-    if S.Abort then return "abort" end
-    task.wait(CONFIG.BaseWait)
-    return "done"
 end
 
 local function stealEgg(e0)
     if S.Busy then return end
+    if not e0.Part or not e0.Part.Parent then
+        showError("Telur sudah tidak ada (diambil player lain / reset).")
+        return
+    end
     S.Busy, S.Abort = true, false
     local ok, err = pcall(function()
         local e = e0
@@ -1347,25 +1369,24 @@ local function stealEgg(e0)
         for _, c in ipairs(AllCache) do known[c.Part] = true end
         e.Known = known
         for _ = 1, CONFIG.MaxRetry do
-            if S.Abort then break end
+            if S.Abort or not RUN.on then break end
             local got, cur, before = chaseAndGrab(e)
             if not got then break end
             e = cur or e
             task.wait(0.2)
             e.Carried = newCarried(before or {})
             local status
-            for _ = 1, 3 do
+            for _ = 1, 2 do
                 status = carryHome(e)
                 if status ~= "retry" then break end
             end
-            if status == "retry" then status = runHomeFallback(e) end
             if status == "done" then
                 addHistory(e)
                 return
             elseif status == "abort" then
                 return
             end
-            -- "lost": telur lepas (kena hit) -> kejar telur yang SAMA, bukan telur lain
+            -- "lost"/"retry": kejar telur yang SAMA lagi, bukan telur lain
             task.wait(0.3)
             local ne = relocate(e)
             if not ne then break end
@@ -1375,10 +1396,10 @@ local function stealEgg(e0)
         Failed[e0.Obj] = tick()
     end)
     if not ok then
-        pcall(stopFake)
-        S.Flying = false
         showError("steal error: " .. tostring(err))
     end
+    releaseControl()
+    S.Abort = false
     S.Busy = false
 end
 
@@ -1395,16 +1416,15 @@ local function pickByPriority()
 end
 
 task.spawn(function()
-    while true do
+    while RUN.on do
         task.wait(0.1)
         if S.Steal and not S.Busy then
             if carryingEgg(LP) and tick() - lastDeliver > 20 then
                 S.Busy = true
                 S.Abort = false
-                pcall(function()
-                    local st = carryHome(nil)
-                    if st == "retry" then runHomeFallback(nil) end
-                end)
+                pcall(carryHome, nil)
+                releaseControl()
+                S.Abort = false
                 S.Busy = false
             else
                 local e = pickByPriority()
@@ -1414,24 +1434,13 @@ task.spawn(function()
     end
 end)
 
--- baca data game (ringan): hanya saat panel dibuka / steal aktif, tiap 60 detik
-task.spawn(function()
-    task.wait(6)
-    while true do
-        if S.GCScan and getgc and (S.Steal or (PanelFrame and PanelFrame.Visible)) and tick() - lastGC > 60 then
-            runGC()
-        end
-        task.wait(5)
-    end
-end)
-
-RunService.Heartbeat:Connect(function()
+track(RunService.Heartbeat:Connect(function()
     if S.Speed then
         local c = LP.Character
         local h = c and c:FindFirstChildOfClass("Humanoid")
         if h then h.WalkSpeed = S.SpeedValue end
     end
-end)
+end))
 
 ------------------------------------------------------------
 -- PROTEKSI (lapisan client-side)
@@ -1479,10 +1488,11 @@ local function setAntiTrap(on)
         Hazards = {}
     end
 end
+StopHooks[#StopHooks + 1] = function() setAntiTrap(false) end
 
 task.spawn(function()
     local lastChar
-    while true do
+    while RUN.on do
         task.wait(0.1)
         if S.AntiHit then
             pcall(function()
@@ -1592,16 +1602,13 @@ local function duelSteal(target)
                 task.wait(0.2)
                 e.Carried = newCarried(before)
                 local st = carryHome(e)
-                if st == "retry" then st = runHomeFallback(e) end
                 if st == "done" then addHistory(e) end
             end
         end
     end)
-    if not ok then
-        pcall(stopFake)
-        S.Flying = false
-        showError("duel error: " .. tostring(err))
-    end
+    if not ok then showError("duel error: " .. tostring(err)) end
+    releaseControl()
+    S.Abort = false
     duelBusy, S.Busy = false, false
 end
 
@@ -1688,6 +1695,19 @@ Banner.Text = "Analyzer: scanning..."
 Banner.Parent = Gui
 Instance.new("UICorner", Banner)
 
+-- tombol bekukan / lanjutkan refresh otomatis panel
+local PanelFrozen = false
+local freezeBtn = Instance.new("TextButton")
+freezeBtn.Size = UDim2.new(0, 84, 0, 20)
+freezeBtn.Position = UDim2.new(1, -118, 0, 3)
+freezeBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 60)
+freezeBtn.TextColor3 = Color3.new(1, 1, 1)
+freezeBtn.Font = Enum.Font.GothamBold
+freezeBtn.TextSize = 10
+freezeBtn.Text = "Auto refresh: ON"
+freezeBtn.Parent = PanelFrame
+Instance.new("UICorner", freezeBtn)
+
 local function clear(sc)
     for _, c in ipairs(sc:GetChildren()) do
         if not c:IsA("UIListLayout") then c:Destroy() end
@@ -1740,19 +1760,22 @@ local function mkEggIcon(row, e)
     end
 end
 
-local lastSig = ""
-local function refreshPanel()
+local lastSig, lastBuild = "", 0
+local function refreshPanel(force)
     if not PanelFrame.Visible then return end
+    if PanelFrozen and not force then return end
+    if not force and tick() - lastBuild < 2 then return end
     local eggs = EggCache
     local parts = {}
     for idx, e in ipairs(eggs) do
         if idx > 30 then break end
-        parts[#parts + 1] = tostring(e.Obj) .. e.Name .. e.Rarity .. tostring(e.Area)
-            .. tostring(e.Weight) .. tostring(e.Type) .. tostring(e.Image)
+        parts[#parts + 1] = ("%d:%d:%s:%s:%s"):format(e.Part.Position.X, e.Part.Position.Z, e.Name, e.Rarity, tostring(e.Image))
     end
     local sig = table.concat(parts, "|")
-    if sig == lastSig then return end
+    if sig == lastSig and not force then return end
     lastSig = sig
+    lastBuild = tick()
+    local scrollPos = PanelList.CanvasPosition
     clear(PanelList)
     for idx, e in ipairs(eggs) do
         if idx > 30 then break end
@@ -1774,16 +1797,25 @@ local function refreshPanel()
         lbl.RichText = true
         lbl.TextXAlignment = Enum.TextXAlignment.Left
         local inc = (e.Price ~= "-" and (" | Income: " .. tostring(e.Price)) or "")
+        local mut = e.Mutation and ("\nMutasi: " .. e.Mutation) or ""
         lbl.Text = "<b>" .. e.Name .. "</b> <font color=\"" .. rarityColor(e.Rarity) .. "\">[" .. e.Rarity ..
             "]</font>\nTipe: " .. tostring(e.Type) .. " | Berat: " .. tostring(e.Weight) ..
-            "\nWilayah: " .. tostring(e.Area) .. inc
+            "\nWilayah: " .. tostring(e.Area) .. inc .. mut
         lbl.Parent = row
 
         mkRowButton(row, "STEAL", Color3.fromRGB(40, 160, 70), function()
             task.spawn(stealEgg, e)
         end)
     end
+    task.defer(function() PanelList.CanvasPosition = scrollPos end)
 end
+
+freezeBtn.MouseButton1Click:Connect(function()
+    PanelFrozen = not PanelFrozen
+    freezeBtn.Text = PanelFrozen and "Auto refresh: OFF" or "Auto refresh: ON"
+    freezeBtn.BackgroundColor3 = PanelFrozen and Color3.fromRGB(150, 60, 60) or Color3.fromRGB(50, 50, 60)
+    if not PanelFrozen then pcall(refreshPanel, true) end
+end)
 
 local function refreshDuel()
     if not DuelFrame.Visible then return end
@@ -1814,13 +1846,13 @@ local function refreshDuel()
 end
 
 task.spawn(function()
-    while true do
+    while RUN.on do
         task.wait(1)
-        pcall(refreshPanel)
+        pcall(refreshPanel, false)
     end
 end)
 task.spawn(function()
-    while true do
+    while RUN.on do
         task.wait(1.5)
         pcall(refreshDuel)
     end
@@ -1847,6 +1879,7 @@ if not Rayfield then
     showError("Rayfield gagal di-load. Cek koneksi / coba executor lain.")
     return
 end
+StopHooks[#StopHooks + 1] = function() Rayfield:Destroy() end
 
 local Window = Rayfield:CreateWindow({
     Name = "LIXX EGG",
@@ -1862,7 +1895,10 @@ TabEgg:CreateToggle({
     Name = "Steal (Divine > Eternal > Secret)", CurrentValue = false, Flag = "StealToggle",
     Callback = function(v)
         S.Steal = v
-        if not v then S.Abort = true end
+        if not v then
+            S.Abort = true
+            task.delay(0.3, releaseControl)
+        end
         if v and not S.Forest then
             Rayfield:Notify({Title = "LIXX EGG", Content = "Forest belum di-set (Setting). Tanpa Forest langsung ke base.", Duration = 5})
         end
@@ -1872,9 +1908,7 @@ TabEgg:CreateButton({
     Name = "Panel (buka panel steal)",
     Callback = function()
         PanelFrame.Visible = true
-        lastSig = ""
-        pcall(refreshPanel)
-        if S.GCScan and tick() - lastGC > 30 then task.spawn(runGC) end
+        pcall(refreshPanel, true)
     end,
 })
 TabEgg:CreateToggle({
@@ -1927,11 +1961,11 @@ TabEgg:CreateSlider({
     Callback = function(v) S.FlySpeed = v end,
 })
 TabEgg:CreateToggle({
-    Name = "Visual lokal: kamera diam di base saat terbang", CurrentValue = true, Flag = "FakeVisual",
+    Name = "Visual lokal: kamera diam di base saat terbang (eksperimen)", CurrentValue = false, Flag = "FakeVisual",
     Callback = function(v) S.FakeVisual = v end,
 })
 TabEgg:CreateToggle({
-    Name = "Baca data game (getgc) untuk isi/berat/tipe", CurrentValue = true, Flag = "GCScan",
+    Name = "Baca data game (getgc) untuk nama/rarity/berat", CurrentValue = true, Flag = "GCScan",
     Callback = function(v) S.GCScan = v end,
 })
 TabEgg:CreateButton({
@@ -2016,6 +2050,17 @@ TabSet:CreateSlider({
     Name = "Radius area base (diabaikan)", Range = {20, 300}, Increment = 5, Suffix = " studs",
     CurrentValue = 70, Flag = "BaseRadius",
     Callback = function(v) S.BaseRadius = v end,
+})
+TabSet:CreateSection("Darurat")
+TabSet:CreateButton({
+    Name = "RESET / Lepas Kontrol (kalau karakter atau kamera nyangkut)",
+    Callback = function()
+        S.Steal = false
+        S.Busy = false
+        releaseControl()
+        task.delay(0.5, function() S.Abort = false end)
+        Rayfield:Notify({Title = "LIXX EGG", Content = "Kontrol dilepas. Steal dimatikan.", Duration = 4})
+    end,
 })
 TabSet:CreateSection("Proteksi (lapisan client-side)")
 TabSet:CreateToggle({
