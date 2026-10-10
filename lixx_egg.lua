@@ -62,7 +62,7 @@ local httpRequest = (syn and syn.request) or (http and http.request) or http_req
 local S = {
     Steal = false, Speed = false, SpeedValue = 70, FlySpeed = 450, FakeVisual = false,
     Duel = false, Notif = false, GCScan = true,
-    AntiHit = false, AntiTrap = false, Flying = false,
+    AntiHit = false, AntiTrap = false, AntiGuard = true, Flying = false,
     Forest = nil, Base = nil, BaseRadius = 70,
     OnlyRoot = true, IgnoreBase = true,
     BaseKeys = {}, BaseCenter = nil, BaseRadiusLearned = 70, AllowedZones = {},
@@ -272,7 +272,7 @@ local OwnerCache = setmetatable({}, {__mode = "k"})
 local InfoCache = setmetatable({}, {__mode = "k"})
 local AdorneeMap = {}
 local DataCache = {}
-local GCRecs = {}
+local GCRecs = setmetatable({}, {__mode = "k"})
 local Failed = {}
 local GCRunning = false
 local lastGC = -999
@@ -408,7 +408,7 @@ local function gcScan(items)
         for _, t in ipairs(getgc(true)) do
             if type(t) == "table" and not skip[t] then
                 count += 1
-                if count % 12000 == 0 then task.wait() end
+                if count % 30000 == 0 then task.wait() end
                 if rawget(t, "Src") == nil and rawget(t, "Obj") == nil then
                     local u = rawget(t, "Uid")
                     if type(u) == "string" and uidMap[u] then addRec(recs, uidMap[u], t) end
@@ -428,7 +428,9 @@ local function gcScan(items)
             end
         end
     end)
-    if ok then GCRecs = recs end
+    if ok then
+        for k, v in pairs(recs) do GCRecs[k] = v end
+    end
 end
 
 local function findAsset(t, depth)
@@ -480,6 +482,7 @@ local function fillFromRecord(info, R)
         end
         if #names > 0 then info.Mutation = table.concat(names, ", ") end
     end
+    info.RecordTable = R
     info.Src = "record"
 end
 
@@ -586,15 +589,36 @@ end
 ------------------------------------------------------------
 local PromptRoot = CONFIG.EggFolder or workspace
 
+local Guards = {}
+
 local function trackPrompt(d)
     if d:IsA("ProximityPrompt") and d.Name == CONFIG.PromptName then Prompts[d] = true end
 end
-track(PromptRoot.DescendantAdded:Connect(trackPrompt))
-track(PromptRoot.DescendantRemoving:Connect(function(d) Prompts[d] = nil end))
+
+local function trackGuard(d)
+    if d:IsA("Model") and d:FindFirstChildOfClass("Humanoid")
+        and (d.Name:lower():find("guard", 1, true) or d:GetAttribute("GuardState") ~= nil) then
+        Guards[d] = true
+    elseif d:IsA("Humanoid") and d.Parent and d.Parent:IsA("Model")
+        and (d.Parent.Name:lower():find("guard", 1, true) or d.Parent:GetAttribute("GuardState") ~= nil) then
+        Guards[d.Parent] = true
+    end
+end
+
+local function trackAdded(d)
+    trackPrompt(d)
+    trackGuard(d)
+end
+
+track(PromptRoot.DescendantAdded:Connect(trackAdded))
+track(PromptRoot.DescendantRemoving:Connect(function(d)
+    Prompts[d] = nil
+    Guards[d] = nil
+end))
 task.spawn(function()
     local i = 0
     for _, d in ipairs(PromptRoot:GetDescendants()) do
-        trackPrompt(d)
+        trackAdded(d)
         i += 1
         if i % 4000 == 0 then task.wait() end
     end
@@ -696,6 +720,7 @@ local function rescan()
             e.Type, e.Weight, e.Price = info.Type or "-", info.Weight or "-", info.Price or "-"
             e.PriceNum = tonumber(info.Price) or 0
             e.SizeAttr, e.Mutation, e.Slot = info.SizeAttr, info.Mutation, info.Slot
+            e.Record = info.RecordTable
             e.Area = info.Area or areaOf(e.Part.Position)
             all[#all + 1] = e
             if S.OnlyRoot and e.Zone ~= "(root)" then return end
@@ -745,23 +770,31 @@ local function runGC()
     GCRunning = false
 end
 
--- baca data game otomatis: sekali di awal, lalu hanya kalau ada telur baru yang belum punya Record
+-- baca data game: mulai cepat, ulangi hanya kalau masih ada telur tanpa record (dengan backoff)
 task.spawn(function()
-    task.wait(6)
-    local firstDone = false
+    task.wait(2)
+    local interval = 6
     while RUN.on do
-        if S.GCScan and getgc and #AllCache > 0 then
+        if S.GCScan and getgc and #AllCache > 0 and not GCRunning then
             local missing = 0
             for _, e in ipairs(AllCache) do
                 if e.Src ~= "record" then missing += 1 end
             end
-            local want = (not firstDone) or (missing > 0 and (S.Steal or (PanelFrame and PanelFrame.Visible)))
-            if want and tick() - lastGC > 20 then
-                firstDone = true
+            if missing > 0 and tick() - lastGC > interval then
                 runGC()
+                task.wait(1.5)
+                local after = 0
+                for _, e in ipairs(AllCache) do
+                    if e.Src ~= "record" then after += 1 end
+                end
+                if after >= missing then
+                    interval = math.min(interval * 2, 60)
+                else
+                    interval = 6
+                end
             end
         end
-        task.wait(3)
+        task.wait(1)
     end
 end)
 
@@ -797,12 +830,24 @@ local function dumpInfo()
     for k, nn in pairs(ZoneCounts) do
         out[#out + 1] = ("%s = %d%s"):format(k, nn, S.BaseKeys[k] and "  [BASE]" or "")
     end
+    local gcount = 0
+    for g in pairs(Guards) do
+        if g.Parent then
+            gcount += 1
+            if gcount <= 6 then
+                out[#out + 1] = ("guard %s | state=%s | sleeping=%s | target=%s"):format(g:GetFullName(),
+                    tostring(g:GetAttribute("GuardState")), tostring(g:GetAttribute("Sleeping")),
+                    tostring(g:GetAttribute("TargetPlayer")))
+            end
+        end
+    end
+    out[#out + 1] = "Penjaga terdeteksi: " .. gcount
     out[#out + 1] = "-- 12 telur teratas (urutan panel) --"
     for i, e in ipairs(EggCache) do
         if i > 12 then break end
-        out[#out + 1] = ("[%d] %s | %s | tipe=%s | berat=%s | income=%s | wilayah=%s | slot=%s | mutasi=%s | src=%s | uid=%s")
+        out[#out + 1] = ("[%d] %s | %s | tipe=%s | berat=%s | income=%s | wilayah=%s | slot=%s | mutasi=%s | src=%s | state=%s")
             :format(i, e.Name, e.Rarity, tostring(e.Type), tostring(e.Weight), tostring(e.Price),
-                tostring(e.Area), tostring(e.Slot), tostring(e.Mutation), e.Src, tostring(e.Uid))
+                tostring(e.Area), tostring(e.Slot), tostring(e.Mutation), e.Src, e.Record and tostring(rawget(e.Record, "State")) or "-")
     end
     local firstFb
     for _, e in ipairs(AllCache) do
@@ -897,6 +942,9 @@ end
 local function holding(e)
     local c = LP.Character
     if not c then return false end
+    if e and e.Record and e.CarryState ~= nil then
+        return rawget(e.Record, "State") == e.CarryState
+    end
     if e and e.Carried and #e.Carried > 0 then
         for _, o in ipairs(e.Carried) do
             if o.Parent and o:IsDescendantOf(c) then return true end
@@ -1121,30 +1169,104 @@ local function relocate(e)
     return best
 end
 
+local function firePrompt(e)
+    local pr = e.Prompt
+    if not pr then return end
+    pcall(function()
+        pr.HoldDuration = 0
+        pr.RequiresLineOfSight = false
+        pr.MaxActivationDistance = 30
+    end)
+    if fireproximityprompt then pcall(fireproximityprompt, pr) end
+end
+
+-- telur sudah terambil? telur yang diambil NEMPEL & MENGIKUTI kita, jadi tidak boleh dikejar lagi
+local function pickedUp(e, before, enabled0)
+    if e.Record and e.State0 ~= nil then
+        local st = rawget(e.Record, "State")
+        if st ~= nil and st ~= e.State0 then return true, st end
+    end
+    if e.Part and e.Part.Parent and e.Home and (e.Part.Position - e.Home).Magnitude > 3.5 then
+        return true
+    end
+    if enabled0 and e.Prompt and (not e.Prompt:IsDescendantOf(workspace) or not e.Prompt.Enabled) then
+        return true
+    end
+    if before and #newCarried(before) > 0 then return true end
+    return carryingEgg(LP)
+end
+
 local function chaseAndGrab(e0)
     local cur = e0
+    cur.Home = cur.Home or cur.Part.Position
     local dist0 = (e0.Part.Position - hrp().Position).Magnitude
     local limit = math.clamp(dist0 / math.max(S.SpeedValue, 16) * 1.6 + 15, 25, 150)
-    local t0 = tick()
-    local before
+    local t0, lastFire, fires = tick(), 0, 0
+    local before, enabled0
     while tick() - t0 < limit and not S.Abort and RUN.on do
         if not cur.Part or not cur.Part.Parent then
+            if before and tick() - lastFire < 0.6 then return true, cur, before end
             local nx = relocate(cur)
             if not nx then return false end
             nx.OrigPos, nx.Known = cur.OrigPos, cur.Known
+            nx.Home = nx.Part.Position
             cur = nx
+            before, enabled0, fires = nil, nil, 0
         end
         local root = hrp()
         local tpos = cur.Part.Position
         cur.LastPos = tpos
         if (tpos - root.Position).Magnitude <= 26 then
-            before = before or snapChar()
-            if grabOnce(cur) then return true, cur, before end
+            if not before then
+                before = snapChar()
+                enabled0 = cur.Prompt and cur.Prompt.Enabled
+                cur.State0 = cur.Record and rawget(cur.Record, "State") or nil
+            end
+            if tick() - lastFire >= 0.12 then
+                lastFire = tick()
+                fires += 1
+                firePrompt(cur)
+            end
+            local ok, st = pickedUp(cur, before, enabled0)
+            if ok then
+                if st ~= nil then cur.CarryState = st end
+                return true, cur, before
+            end
+            if fires > 40 then return false end
         end
         stepRun(tpos)
         task.wait()
     end
     return false
+end
+
+-- penjaga: tunggu sampai penjaga di dekat telur tidur dulu (kurangi kena hit)
+local function guardAwakeNear(pos)
+    for g in pairs(Guards) do
+        if g.Parent then
+            local p = g.PrimaryPart or g:FindFirstChild("HumanoidRootPart")
+            if p and (p.Position - pos).Magnitude < 90 then
+                local st = g:GetAttribute("GuardState")
+                local sl = g:GetAttribute("Sleeping")
+                if (st ~= nil and st ~= "Sleeping") or sl == false then return true end
+            end
+        else
+            Guards[g] = nil
+        end
+    end
+    return false
+end
+
+local function waitGuardAsleep(pos, maxWait)
+    local t0 = tick()
+    local noted = false
+    while guardAwakeNear(pos) and tick() - t0 < maxWait and not S.Abort and RUN.on do
+        if not noted then
+            noted = true
+            showError("Penjaga sedang bangun, menunggu tidur...")
+        end
+        task.wait(0.3)
+    end
 end
 
 -- visual lokal (opsional): kamera menempel ke kembaran yang diam di base
@@ -1280,18 +1402,37 @@ local function moveLeg(pos, abortFn)
     return runLeg(pos, abortFn)
 end
 
+local function isFreeState(st, st0)
+    if st == nil then return false end
+    if st0 ~= nil and st == st0 then return true end
+    local l = tostring(st):lower()
+    return (l:find("slot", 1, true) or l:find("drop", 1, true) or l:find("free", 1, true)
+        or l:find("ground", 1, true) or l:find("loose", 1, true)) ~= nil
+end
+
+-- telur dianggap lepas HANYA kalau status Record kembali ke slot/jatuh,
+-- atau (tanpa record) objek telur hilang dari karakter DAN darah berkurang
 local function lostWatcher(e)
-    local since
     local t0 = tick()
+    local since
+    local c = LP.Character
+    local h = c and c:FindFirstChildOfClass("Humanoid")
+    local hp0 = h and h.Health or 0
     return function()
-        if not (e and e.Carried and #e.Carried > 0) then return false end
-        if tick() - t0 < 0.8 then return false end
-        if holding(e) then
+        if not e then return false end
+        local lostNow = false
+        if e.Record and e.CarryState ~= nil then
+            local st = rawget(e.Record, "State")
+            if st ~= e.CarryState and isFreeState(st, e.State0) then lostNow = true end
+        elseif e.Carried and #e.Carried > 0 and h and h.Health < hp0 - 0.5 then
+            if not holding(e) then lostNow = true end
+        end
+        if not lostNow then
             since = nil
             return false
         end
         since = since or tick()
-        return tick() - since > 0.8
+        return tick() - since > 0.6 and tick() - t0 > 0.8
     end
 end
 
@@ -1338,7 +1479,7 @@ local function carryHome(e)
         local w0 = tick()
         while tick() - w0 < CONFIG.BaseWait do
             if S.Abort then break end
-            if e and e.Carried and #e.Carried > 0 and not holding(e) then break end
+            if e and ((e.Carried and #e.Carried > 0) or e.CarryState ~= nil) and not holding(e) then break end
             task.wait(0.1)
         end
     elseif lost then
@@ -1368,29 +1509,32 @@ local function stealEgg(e0)
         local known = {}
         for _, c in ipairs(AllCache) do known[c.Part] = true end
         e.Known = known
+        if S.AntiGuard then waitGuardAsleep(e.Part.Position, 12) end
         for _ = 1, CONFIG.MaxRetry do
             if S.Abort or not RUN.on then break end
+            e.Home, e.CarryState, e.Carried = nil, nil, nil
             local got, cur, before = chaseAndGrab(e)
             if not got then break end
-            e = cur or e
-            task.wait(0.2)
-            e.Carried = newCarried(before or {})
+            local ce = cur or e
+            -- langsung terbang ke base (tanpa menunggu), daftar objek yang dibawa dicatat sambil jalan
+            local snap = before or {}
+            task.delay(0.35, function() ce.Carried = newCarried(snap) end)
             local status
             for _ = 1, 2 do
-                status = carryHome(e)
+                status = carryHome(ce)
                 if status ~= "retry" then break end
             end
             if status == "done" then
-                addHistory(e)
+                addHistory(ce)
                 return
             elseif status == "abort" then
                 return
             end
-            -- "lost"/"retry": kejar telur yang SAMA lagi, bukan telur lain
+            -- telur lepas (kena hit): kejar telur yang SAMA lagi, bukan telur lain
             task.wait(0.3)
-            local ne = relocate(e)
+            local ne = relocate(ce)
             if not ne then break end
-            ne.OrigPos, ne.Known, ne.LostPos = e.OrigPos, e.Known, e.LostPos
+            ne.OrigPos, ne.Known, ne.LostPos = ce.OrigPos, ce.Known, ce.LostPos
             e = ne
         end
         Failed[e0.Obj] = tick()
@@ -1525,6 +1669,42 @@ task.spawn(function()
                 for _, ch in ipairs(c:GetChildren()) do
                     if (ch:IsA("ValueBase") or ch:IsA("Constraint")) and nameHas(ch.Name, CONFIG.StatusWords) then
                         pcall(function() ch:Destroy() end)
+                    end
+                end
+            end)
+        end
+    end
+end)
+
+local GuardOrig = {}
+local function setAntiGuard(on)
+    S.AntiGuard = on
+    if not on then
+        for p, o in pairs(GuardOrig) do
+            pcall(function()
+                p.CanCollide = o[1]
+                p.CanTouch = o[2]
+            end)
+        end
+        GuardOrig = {}
+    end
+end
+StopHooks[#StopHooks + 1] = function() setAntiGuard(false) end
+
+task.spawn(function()
+    while RUN.on do
+        task.wait(1)
+        if S.AntiGuard then
+            pcall(function()
+                for g in pairs(Guards) do
+                    if g.Parent then
+                        for _, p in ipairs(g:GetDescendants()) do
+                            if p:IsA("BasePart") and not GuardOrig[p] then
+                                GuardOrig[p] = {p.CanCollide, p.CanTouch}
+                                p.CanCollide = false
+                                p.CanTouch = false
+                            end
+                        end
                     end
                 end
             end)
@@ -1764,11 +1944,11 @@ local lastSig, lastBuild = "", 0
 local function refreshPanel(force)
     if not PanelFrame.Visible then return end
     if PanelFrozen and not force then return end
-    if not force and tick() - lastBuild < 2 then return end
+    if not force and tick() - lastBuild < 0.7 then return end
     local eggs = EggCache
     local parts = {}
     for idx, e in ipairs(eggs) do
-        if idx > 30 then break end
+        if idx > 120 then break end
         parts[#parts + 1] = ("%d:%d:%s:%s:%s"):format(e.Part.Position.X, e.Part.Position.Z, e.Name, e.Rarity, tostring(e.Image))
     end
     local sig = table.concat(parts, "|")
@@ -1778,7 +1958,7 @@ local function refreshPanel(force)
     local scrollPos = PanelList.CanvasPosition
     clear(PanelList)
     for idx, e in ipairs(eggs) do
-        if idx > 30 then break end
+        if idx > 120 then break end
         local row = Instance.new("Frame")
         row.Size = UDim2.new(1, -6, 0, 58)
         row.BackgroundColor3 = Color3.fromRGB(38, 38, 46)
@@ -1847,7 +2027,7 @@ end
 
 task.spawn(function()
     while RUN.on do
-        task.wait(1)
+        task.wait(0.5)
         pcall(refreshPanel, false)
     end
 end)
@@ -2070,6 +2250,10 @@ TabSet:CreateToggle({
 TabSet:CreateToggle({
     Name = "Anti Trap (matikan sentuhan jebakan secara lokal)", CurrentValue = false, Flag = "AntiTrap",
     Callback = function(v) setAntiTrap(v) end,
+})
+TabSet:CreateToggle({
+    Name = "Anti Penjaga (tunggu penjaga tidur + netralkan tubuh penjaga lokal)", CurrentValue = true, Flag = "AntiGuard",
+    Callback = function(v) setAntiGuard(v) end,
 })
 
 ------------------------------------------------------------
