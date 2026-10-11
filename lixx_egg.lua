@@ -25,7 +25,7 @@ end
 -- CONFIG
 ------------------------------------------------------------
 local CONFIG = {
-    Version = "v10-trace",
+    Version = "v11-speedcap",
     PromptName = "CarryAreaEgg",
     EggFolder = nil,
     EggNamePattern = "egg",
@@ -67,7 +67,7 @@ local S = {
     SafeDelivery = true, CapFly = false, SafeMult = 1.3, StageDist = 150, Legit = nil,
     Duel = false, Notif = false, GCScan = true,
     AntiHit = false, AntiTrap = false, AntiGuard = true, AntiPush = false, Flying = false,
-    WSBackup = nil, Phase = "-", TraceT0 = 0, TraceDist = -1, NavInfo = "-",
+    WSBackup = nil, RunFactor = 0.9, RunCap = nil, Snaps = 0, Phase = "-", TraceT0 = 0, TraceDist = -1, NavInfo = "-",
     Forest = nil, Base = nil, BaseRadius = 70,
     OnlyRoot = true, IgnoreBase = true,
     BaseKeys = {}, BaseCenter = nil, BaseRadiusLearned = 70, AllowedZones = {},
@@ -829,7 +829,8 @@ local function dumpInfo()
         ("OnlyRoot=%s IgnoreBase=%s Terbang gagal=%d"):format(tostring(S.OnlyRoot), tostring(S.IgnoreBase), FlyFails),
         ("Lolos filter: %d | Semua prompt: %d"):format(#EggCache, #AllCache),
         "Deteksi ambil terakhir: " .. tostring(S.LastPick) .. " | Terbang terakhir: " .. tostring(S.LastFly)
-            .. " | Pengiriman: " .. tostring(S.LastSafe) .. " | KecepatanAsli=" .. tostring(S.Legit)}
+            .. " | Pengiriman: " .. tostring(S.LastSafe) .. " | KecepatanAsli=" .. tostring(S.Legit)
+            .. " | Snap=" .. tostring(S.Snaps) .. " | BatasLari=" .. tostring(S.RunCap)}
     local rec, fb = 0, 0
     for _, e in ipairs(AllCache) do
         if e.Src == "record" then rec += 1 else fb += 1 end
@@ -881,7 +882,16 @@ local function dumpInfo()
         out[#out + 1] = "karakter: " .. table.concat(kids, ",")
     end
     out[#out + 1] = "-- JEJAK STEAL TERAKHIR (detik|fase|jenis|posisi x,y,z|info) --"
-    for i = math.max(1, #Trace - 220), #Trace do out[#out + 1] = Trace[i] end
+    local cnt = 0
+    for i = math.max(1, #Trace - 300), #Trace do
+        local ln = Trace[i]
+        if ln:find("|s|", 1, true) then
+            cnt += 1
+            if cnt % 3 == 0 then out[#out + 1] = ln end
+        else
+            out[#out + 1] = ln
+        end
+    end
     local txt = table.concat(out, "\n")
     if setclipboard then pcall(setclipboard, txt) end
     if DumpBox then DumpBox.Text = txt end
@@ -1199,14 +1209,49 @@ local function computePath(nav, from, to)
     if trace then trace("path", nav.wps and #nav.wps or "gagal") end
 end
 
-local function setNearSlow(h, slow)
-    if slow then
-        if not S.WSBackup then S.WSBackup = h.WalkSpeed end
-        if h.WalkSpeed > 60 then h.WalkSpeed = 60 end
-    elseif S.WSBackup then
-        h.WalkSpeed = S.WSBackup
-        S.WSBackup = nil
+-- Pengatur kecepatan: jaga kecepatan NYATA (studs/detik) di bawah batas yang diterima server.
+-- Kalau server menarik kita mundur (snap), batas diturunkan otomatis dan diingat.
+local function governSpeed(nav, h, pos, d)
+    if S.Speed then return end
+    local now = tick()
+    if not S.WSBackup then S.WSBackup = h.WalkSpeed end
+    local legit = S.WSBackup
+    if nav.lastPos then
+        local dt = now - nav.lastT
+        local jump = (pos - nav.lastPos).Magnitude
+        if jump > 60 and d > (nav.lastD or d) + 30 then
+            S.RunCap = math.max((S.RunCap or (legit * S.RunFactor)) * 0.8, 50)
+            nav.ws = (nav.ws or legit) * 0.8
+            nav.vEma = nil
+            nav.progD = nil
+            S.Snaps = (S.Snaps or 0) + 1
+            if trace then trace("SNAP", ("batas=%d"):format(S.RunCap)) end
+        elseif dt > 0.02 then
+            local flat = Vector3.new(pos.X - nav.lastPos.X, 0, pos.Z - nav.lastPos.Z).Magnitude
+            local inst = flat / dt
+            if inst < 900 then nav.vEma = nav.vEma and (nav.vEma * 0.8 + inst * 0.2) or inst end
+        end
     end
+    nav.lastPos, nav.lastT, nav.lastD = pos, now, d
+    local cap = S.RunCap or (legit * S.RunFactor)
+    if d < 40 then
+        h.WalkSpeed = math.min(60, cap)
+        nav.nearSlow = true
+        return
+    end
+    if nav.nearSlow then
+        nav.nearSlow = false
+        nav.vEma = nil
+    end
+    nav.ws = nav.ws or math.min(legit, cap / 1.3)
+    if nav.vEma then
+        if nav.vEma > cap then
+            nav.ws = nav.ws * math.max(cap / nav.vEma, 0.8)
+        elseif nav.vEma < cap * 0.85 then
+            nav.ws = math.min(nav.ws * 1.03, legit)
+        end
+    end
+    h.WalkSpeed = nav.ws
 end
 
 -- satu langkah gerak; return true kalau sudah dalam jarak "stop" dari tujuan
@@ -1215,7 +1260,7 @@ local function stepNav(nav, goal, stop)
     local pos = root.Position
     local d = (goal - pos).Magnitude
     S.TraceDist = math.floor(d)
-    if not S.Speed then setNearSlow(h, d < 40) end
+    governSpeed(nav, h, pos, d)
     if d <= stop then return true end
     nav.stuckPos = nav.stuckPos or pos
     local stuck = false
@@ -2311,6 +2356,14 @@ TabEgg:CreateToggle({
     Callback = function(v)
         S.Speed = v
         if not v then pcall(function() hum().WalkSpeed = S.Legit or 16 end) end
+    end,
+})
+TabEgg:CreateSlider({
+    Name = "Batas kecepatan lari (x kecepatan asli; turun otomatis kalau server menarik balik)", Range = {0.3, 1.2}, Increment = 0.05, Suffix = "x",
+    CurrentValue = 0.9, Flag = "RunFactor",
+    Callback = function(v)
+        S.RunFactor = v
+        S.RunCap = nil
     end,
 })
 TabEgg:CreateToggle({
