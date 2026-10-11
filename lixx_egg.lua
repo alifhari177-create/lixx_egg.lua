@@ -62,7 +62,7 @@ local httpRequest = (syn and syn.request) or (http and http.request) or http_req
 -- STATE
 ------------------------------------------------------------
 local S = {
-    Steal = false, Speed = false, SpeedValue = 150, FlySpeed = 450, FakeVisual = false, FlyApproach = false,
+    Steal = false, Speed = false, SpeedValue = 250, FlySpeed = 450, FakeVisual = false, FlyApproach = false,
     SafeDelivery = true, CapFly = false, SafeMult = 1.3, StageDist = 150, Legit = nil,
     Duel = false, Notif = false, GCScan = true,
     AntiHit = false, AntiTrap = false, AntiGuard = true, Flying = false,
@@ -1053,7 +1053,6 @@ local function releaseControl()
         if h then
             cam.CameraSubject = h
             h.PlatformStand = false
-            if S.Legit and not S.Speed then h.WalkSpeed = S.Legit end
         end
         if cam.CameraType == Enum.CameraType.Scriptable then cam.CameraType = Enum.CameraType.Custom end
         local r = c and c:FindFirstChild("HumanoidRootPart")
@@ -1116,34 +1115,75 @@ local lastJump = 0
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
--- lari lurus dengan kecepatan player (dipaksa lewat velocity supaya tidak melambat)
-local function stepRun(tpos, speedOverride)
-    local root, h = hrp(), hum()
-    local flat = Vector3.new(tpos.X - root.Position.X, 0, tpos.Z - root.Position.Z)
-    if flat.Magnitude <= 2.5 then return end
-    local dir = flat.Unit
-    local speed = speedOverride or S.SpeedValue
-    h.WalkSpeed = speed
-    h:MoveTo(tpos)
-    local v = root.AssemblyLinearVelocity
-    root.AssemblyLinearVelocity = Vector3.new(dir.X * speed, v.Y, dir.Z * speed)
-    if tick() - lastJump > 0.4 then
-        rayParams.FilterDescendantsInstances = {char()}
-        local hit = workspace:Raycast(root.Position, dir * 5, rayParams)
-        if (hit and hit.Instance.CanCollide) or (tpos.Y - root.Position.Y > 5) then
-            h.Jump = true
-            lastJump = tick()
-        end
-    end
+-- NAVIGASI LARI: pakai kecepatan jalan ASLI karakter (tidak diubah), tabrakan normal,
+-- pathfinding kalau jauh atau macet. Tidak ada terbang / noclip.
+local function newNav()
+    return {wps = nil, wi = 1, lastPath = -999, stuckT = tick(), stuckPos = nil, jumpT = 0}
 end
 
--- kecepatan lari saat bawa telur (dibatasi kalau mode aman aktif)
-local function carrySpeed()
-    local base = math.max(S.SpeedValue, 150)
-    if S.SafeDelivery then
-        return math.max(math.min(base, (S.Legit or 16) * S.SafeMult), 16)
+local function computePath(nav, from, to)
+    nav.lastPath = tick()
+    nav.wps = nil
+    pcall(function()
+        local path = PathfindingService:CreatePath({AgentRadius = 2, AgentHeight = 5, AgentCanJump = true, WaypointSpacing = 6})
+        path:ComputeAsync(from, to)
+        if path.Status == Enum.PathStatus.Success then
+            local w = path:GetWaypoints()
+            if #w >= 2 then
+                nav.wps = w
+                nav.wi = 2
+            end
+        end
+    end)
+end
+
+-- satu langkah gerak; return true kalau sudah dalam jarak "stop" dari tujuan
+local function stepNav(nav, goal, stop)
+    local root, h = hrp(), hum()
+    local pos = root.Position
+    local d = (goal - pos).Magnitude
+    if d <= stop then return true end
+    nav.stuckPos = nav.stuckPos or pos
+    local forceRepath = false
+    if tick() - nav.stuckT > 1 then
+        if (pos - nav.stuckPos).Magnitude < 3 then
+            forceRepath = true
+            h.Jump = true
+        end
+        nav.stuckT, nav.stuckPos = tick(), pos
     end
-    return base
+    if (not nav.wps and d > 20 and tick() - nav.lastPath > 2.5) or forceRepath
+        or (nav.wps and tick() - nav.lastPath > 8 and d > 40) then
+        computePath(nav, pos, goal)
+    end
+    local target = goal
+    if nav.wps then
+        local w = nav.wps
+        local n = #w
+        while nav.wi < n and (pos - w[nav.wi].Position).Magnitude < 6 do
+            if w[nav.wi].Action == Enum.PathWaypointAction.Jump then h.Jump = true end
+            nav.wi += 1
+        end
+        if nav.wi >= n and (pos - w[n].Position).Magnitude < 6 then
+            nav.wps = nil
+        else
+            target = w[math.min(nav.wi + 2, n)].Position
+            if w[nav.wi].Action == Enum.PathWaypointAction.Jump then h.Jump = true end
+        end
+    end
+    h:MoveTo(target)
+    if not nav.wps and tick() - nav.jumpT > 0.4 then
+        local flat = Vector3.new(target.X - pos.X, 0, target.Z - pos.Z)
+        if flat.Magnitude > 1 then
+            rayParams.FilterDescendantsInstances = {char()}
+            local hit = workspace:Raycast(pos, flat.Unit * 5, rayParams)
+            if (hit and hit.Instance.CanCollide) or (target.Y - pos.Y > 5) then
+                h.Jump = true
+                nav.jumpT = tick()
+            end
+        end
+    end
+    return false
 end
 
 local function grabOnce(e)
@@ -1266,10 +1306,10 @@ local function chaseAndGrab(e0)
     local cur = e0
     prepareEgg(cur)
     local dist0 = (e0.Part.Position - hrp().Position).Magnitude
-    local limit = math.clamp(dist0 / math.max(S.SpeedValue, 16) * 1.6 + 15, 25, 150)
+    local limit = math.clamp(dist0 / math.max(hum().WalkSpeed, 16) * 2 + 25, 30, 240)
     local t0, lastFire, closeFires = tick(), 0, 0
     local before, enabled0
-    local wps, wi, stuckT, stuckPos = nil, 1, tick(), hrp().Position
+    local nav = newNav()
     while tick() - t0 < limit and not S.Abort and RUN.on do
         if not cur.Part or not cur.Part.Parent then
             if before and tick() - lastFire < 0.6 then
@@ -1283,6 +1323,7 @@ local function chaseAndGrab(e0)
             prepareEgg(nx)
             cur = nx
             before, enabled0, closeFires = nil, nil, 0
+            nav = newNav()
         end
         local root = hrp()
         local tpos = cur.Part.Position
@@ -1306,48 +1347,14 @@ local function chaseAndGrab(e0)
                 markPick(cur)
                 return true, cur, before
             end
-            -- pengaman: sudah beberapa kali ditekan dari jarak dekat = anggap terambil, JANGAN muter-muter di dekat penjaga
+            -- pengaman: sudah beberapa kali ditekan dari jarak dekat = anggap terambil
             if closeFires >= 5 then
                 S.LastPick = "diasumsikan"
                 markPick(cur)
                 return true, cur, before
             end
         end
-        if S.FlyApproach and FlyFails < 2 and dist > 40 and not before then
-            local okF, whyF = flyLeg(tpos, nil)
-            if okF then
-                FlyFails = 0
-            elseif whyF ~= "abort" then
-                FlyFails += 1
-            end
-        else
-            -- macet (terhalang tembok/air)? pakai pathfinding supaya tidak tembus dan tidak mati
-            if tick() - stuckT > 1 then
-                if (root.Position - stuckPos).Magnitude < 3 and dist > 12 and not wps then
-                    pcall(function()
-                        local path = PathfindingService:CreatePath({AgentRadius = 2, AgentHeight = 5, AgentCanJump = true})
-                        path:ComputeAsync(root.Position, tpos)
-                        if path.Status == Enum.PathStatus.Success then
-                            wps = path:GetWaypoints()
-                            wi = 2
-                        end
-                    end)
-                end
-                stuckT, stuckPos = tick(), root.Position
-            end
-            local goal = tpos
-            if wps then
-                local w = wps[wi]
-                if w then
-                    goal = w.Position
-                    if w.Action == Enum.PathWaypointAction.Jump then hum().Jump = true end
-                    if (root.Position - w.Position).Magnitude < 4 then wi += 1 end
-                else
-                    wps = nil
-                end
-            end
-            stepRun(goal)
-        end
+        stepNav(nav, tpos, 3.5)
         task.wait()
     end
     return false
@@ -1409,119 +1416,22 @@ local function stopFake()
     S.Abort = false
 end
 
--- terbang LURUS & secepat mungkin. Kecepatan otomatis turun kalau server menahan (rubberband),
--- jadi selalu menemukan kecepatan tertinggi yang diterima. return arrived, alasan
-function flyLeg(pos, abortFn)
-    local root, h = hrp(), hum()
-    local parts, orig = {}, {}
-    for _, p in ipairs(char():GetDescendants()) do
-        if p:IsA("BasePart") then
-            parts[#parts + 1] = p
-            orig[p] = p.CanCollide
-        end
-    end
-    local bv = Instance.new("BodyVelocity")
-    bv.Name = "LIXX_BV"
-    bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
-    bv.Velocity = Vector3.zero
-    bv.Parent = root
-    h.PlatformStand = true
-    S.Flying = true
-    local target = pos + Vector3.new(0, 3, 0)
-    local spd = math.min(CONFIG.FlyMax, (S.FlyGood or CONFIG.FlyMax) * 2)
-    if S.CapFly then spd = math.min(spd, math.max((S.Legit or 16) * S.SafeMult, 8)) end
-    local spd0 = spd
-    local minSpd = math.min(40, spd0 * 0.4)
-    local t0 = tick()
-    local arrived, why = false, "timeout"
-    local checkT, checkD = tick(), (target - root.Position).Magnitude
-    while tick() - t0 < 60 do
-        if S.Abort or not RUN.on then
-            why = "abort"
-            break
-        end
-        if abortFn and abortFn() then
-            why = "abort"
-            break
-        end
-        if not root.Parent then
-            why = "abort"
-            break
-        end
-        local diff = target - root.Position
-        local d = diff.Magnitude
-        if d < 6 then
-            arrived, why = true, "arrived"
-            break
-        end
-        local v = diff.Unit * math.min(spd, math.max(d * 20, 30))
-        -- efek glitch halus lewat noise kecepatan (tanpa memutar karakter)
-        v = v + Vector3.new((math.random() - 0.5) * 30, (math.random() - 0.5) * 30, (math.random() - 0.5) * 30)
-        bv.Velocity = v
-        for i = 1, #parts do parts[i].CanCollide = false end
-        if FakeHum then
-            local cam = workspace.CurrentCamera
-            if cam.CameraSubject ~= FakeHum then cam.CameraSubject = FakeHum end
-        end
-        -- governor: tiap 0.5 detik cek kemajuan nyata; kalau ditahan server, turunkan kecepatan
-        if tick() - checkT >= 0.5 then
-            local progressed = checkD - d
-            local expected = math.min(spd, math.max(d * 20, 30)) * 0.5
-            if progressed < expected * 0.3 then
-                spd = spd * 0.5
-                if spd < minSpd then
-                    why = "stuck"
-                    break
-                end
-            end
-            checkT, checkD = tick(), d
-        end
-        task.wait()
-    end
-    if arrived then S.FlyGood = spd end
-    S.LastFly = ("mulai=%d akhir=%d hasil=%s"):format(spd0, spd, why)
-    pcall(function() bv.Velocity = Vector3.zero end)
-    pcall(function() bv:Destroy() end)
-    S.Flying = false
-    pcall(function() h.PlatformStand = false end)
-    for _, p in ipairs(parts) do
-        pcall(function() p.CanCollide = orig[p] end)
-    end
-    if root.Parent then
-        root.AssemblyLinearVelocity = Vector3.zero
-        if arrived then
-            root.CFrame = CFrame.new(target)
-        end
-    end
-    return arrived, why
-end
-
--- lari lurus (cadangan kalau terbang diblokir / macet)
+-- lari ke tujuan dengan kecepatan asli. return arrived, alasan
 local function runLeg(pos, abortFn)
-    local dist0 = (hrp().Position - pos).Magnitude
-    local limit = math.clamp(dist0 / math.max(S.SpeedValue, 16) * 1.6 + 15, 20, 180)
+    local d0 = (hrp().Position - pos).Magnitude
+    local limit = math.clamp(d0 / math.max(hum().WalkSpeed, 16) * 2 + 25, 25, 240)
+    local nav = newNav()
     local t0 = tick()
     while tick() - t0 < limit and RUN.on do
         if S.Abort then return false, "abort" end
         if abortFn and abortFn() then return false, "abort" end
-        if (hrp().Position - pos).Magnitude <= 8 then return true, "arrived" end
-        stepRun(pos, carrySpeed())
+        if stepNav(nav, pos, 8) then return true, "arrived" end
         task.wait()
     end
-    return (hrp().Position - pos).Magnitude <= 12, "timeout"
+    return (hrp().Position - pos).Magnitude <= 14, "timeout"
 end
 
--- terbang dulu; kalau macet 2x berturut-turut, pakai lari saja. Tidak pernah diam di jalan.
 local function moveLeg(pos, abortFn)
-    if FlyFails < 2 then
-        local ok, why = flyLeg(pos, abortFn)
-        if ok then
-            FlyFails = 0
-            return true, why
-        end
-        if why == "abort" then return false, why end
-        FlyFails += 1
-    end
     return runLeg(pos, abortFn)
 end
 
@@ -1564,40 +1474,6 @@ local function lostWatcher(e)
     end
 end
 
--- melayang diam di tempat sampai waktu tertentu (tidak jatuh ke air/void)
-local function hover(untilT, abortFn)
-    local root, h = hrp(), hum()
-    local bv = Instance.new("BodyVelocity")
-    bv.Name = "LIXX_BV"
-    bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
-    bv.Velocity = Vector3.zero
-    bv.Parent = root
-    h.PlatformStand = true
-    S.Flying = true
-    local ok = true
-    while tick() < untilT do
-        if S.Abort or not RUN.on then
-            ok = false
-            break
-        end
-        if abortFn and abortFn() then
-            ok = false
-            break
-        end
-        if not root.Parent then
-            ok = false
-            break
-        end
-        bv.Velocity = Vector3.zero
-        task.wait(0.05)
-    end
-    pcall(function() bv:Destroy() end)
-    S.Flying = false
-    pcall(function() h.PlatformStand = false end)
-    if root.Parent then root.AssemblyLinearVelocity = Vector3.zero end
-    return ok
-end
-
 -- return: "done" | "lost" | "abort" | "retry"
 local function carryHome(e)
     lastDeliver = tick()
@@ -1617,20 +1493,12 @@ local function carryHome(e)
     end
 
     startFake(S.Base)
-
-    -- server menolak "Delivery Egg" kalau jarak/waktu sejak ambil tidak masuk akal.
-    -- Hitung waktu minimal; terbang cepat ke titik tunggu, melayang sampai cukup, baru masuk base.
-    local legit = math.max((S.Legit or 16) * S.SafeMult, 8)
     local pickPos = (e and e.PickPos) or hrp().Position
     local pickT = (e and e.PickT) or tick()
-    local total = (S.Base - pickPos).Magnitude
-    local needT = total / legit * 1.1 + 0.5
-    local deadline = pickT + needT
-    S.LastSafe = ("aman=%s legit=%.0f jarak=%.0f butuh=%.1fs"):format(tostring(S.SafeDelivery), legit, total, needT)
 
     local ok = true
     if S.Forest then
-        ok = moveLeg(S.Forest, abort)
+        ok = runLeg(S.Forest, abort)
         if ok then
             local w0 = tick()
             while tick() - w0 < CONFIG.ForestWait do
@@ -1645,20 +1513,14 @@ local function carryHome(e)
         HintShown = true
         showError("Forest belum di-set, langsung ke base (Setting > Set Posisi Forest)")
     end
-
-    if ok and S.SafeDelivery then
-        local toBase = S.Base - hrp().Position
-        if toBase.Magnitude > S.StageDist + 20 then
-            ok = moveLeg(S.Base - toBase.Unit * S.StageDist, abort)
-        end
-        if ok and tick() < deadline then
-            ok = hover(deadline, abort)
-        end
-    end
-    if ok then ok = moveLeg(S.Base, abort) end
+    if ok then ok = runLeg(S.Base, abort) end
 
     local status = "done"
     if ok then
+        local dt = math.max(tick() - pickT, 0.01)
+        local dist = (S.Base - pickPos).Magnitude
+        S.LastSafe = ("jarak=%.0f waktu=%.1fs rata2=%.0f studs/s | kecepatan asli=%.0f"):format(
+            dist, dt, dist / dt, S.Legit or 0)
         local w0 = tick()
         while tick() - w0 < CONFIG.BaseWait do
             if S.Abort then break end
@@ -2323,38 +2185,16 @@ TabEgg:CreateButton({
     Callback = function() pcall(function() ZoneDropdown:Refresh(zoneOptions()) end) end,
 })
 TabEgg:CreateSlider({
-    Name = "Speed Boost / Kecepatan Lari (cadangan & dasar)", Range = {16, 400}, Increment = 1, Suffix = " speed",
-    CurrentValue = 150, Flag = "SpeedSlider",
+    Name = "Speed Boost (opsional, hanya jika toggle di bawah ON)", Range = {16, 500}, Increment = 1, Suffix = " speed",
+    CurrentValue = 250, Flag = "SpeedSlider",
     Callback = function(v) S.SpeedValue = v end,
 })
 TabEgg:CreateToggle({
     Name = "Speed Boost On/Off", CurrentValue = false, Flag = "SpeedToggle",
     Callback = function(v)
         S.Speed = v
-        if not v then pcall(function() hum().WalkSpeed = 16 end) end
+        if not v then pcall(function() hum().WalkSpeed = S.Legit or 16 end) end
     end,
-})
-TabEgg:CreateToggle({
-    Name = "Mendekati telur dengan terbang (TEMBUS dinding, berisiko mati)", CurrentValue = false, Flag = "FlyApproach",
-    Callback = function(v) S.FlyApproach = v end,
-})
-TabEgg:CreateToggle({
-    Name = "Mode aman anti 'Delivery Egg' (tunggu sebelum masuk base)", CurrentValue = true, Flag = "SafeDelivery",
-    Callback = function(v) S.SafeDelivery = v end,
-})
-TabEgg:CreateSlider({
-    Name = "Pengali kecepatan aman (x kecepatan jalan asli)", Range = {0.5, 5}, Increment = 0.1, Suffix = "x",
-    CurrentValue = 1.3, Flag = "SafeMult",
-    Callback = function(v) S.SafeMult = v end,
-})
-TabEgg:CreateSlider({
-    Name = "Jarak titik tunggu sebelum base", Range = {50, 400}, Increment = 10, Suffix = " studs",
-    CurrentValue = 150, Flag = "StageDist",
-    Callback = function(v) S.StageDist = v end,
-})
-TabEgg:CreateToggle({
-    Name = "Batasi kecepatan terbang = kecepatan asli (paling aman, lebih lambat)", CurrentValue = false, Flag = "CapFly",
-    Callback = function(v) S.CapFly = v end,
 })
 TabEgg:CreateToggle({
     Name = "Visual lokal: kamera diam di base saat terbang (eksperimen)", CurrentValue = false, Flag = "FakeVisual",
