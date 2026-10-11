@@ -40,9 +40,9 @@ local CONFIG = {
         "thorn", "poison", "shock", "electric", "zap", "blade"},
     StatusWords = {"stun", "ragdoll", "freeze", "frozen", "stagger", "knock", "slow", "root", "trap", "paralyz"},
     ForestWait = 2,   -- detik berhenti di Forest
-    BaseWait = 3,     -- detik diam di base setelah sampai
+    BaseWait = 2,     -- detik diam di base setelah sampai
     ScanInterval = 1,
-    MaxRetry = 15,
+    MaxRetry = 8,
     FlyMax = 1600,   -- kecepatan terbang maksimum; otomatis turun kalau server menahan
 }
 
@@ -61,7 +61,7 @@ local httpRequest = (syn and syn.request) or (http and http.request) or http_req
 -- STATE
 ------------------------------------------------------------
 local S = {
-    Steal = false, Speed = false, SpeedValue = 70, FlySpeed = 450, FakeVisual = false,
+    Steal = false, Speed = false, SpeedValue = 150, FlySpeed = 450, FakeVisual = false, FlyApproach = true,
     Duel = false, Notif = false, GCScan = true,
     AntiHit = false, AntiTrap = false, AntiGuard = true, Flying = false,
     Forest = nil, Base = nil, BaseRadius = 70,
@@ -279,6 +279,7 @@ local GCRunning = false
 local lastGC = -999
 local FakeChar, FakeHum
 local FlyFails = 0
+local flyLeg
 
 local function findData(name)
     local c = DataCache[name]
@@ -1219,7 +1220,8 @@ local function pickedUp(e, before, enabled0)
         if m.Parent ~= e.ModelParent0 then return true, nil, "model-pindah-parent" end
         local ok, pv = pcall(function() return m:GetPivot().Position end)
         if ok and e.ModelHome and (pv - e.ModelHome).Magnitude > 3.5 then
-            e.ModelFollowed = true
+            local rt = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+            if rt and (pv - rt.Position).Magnitude < 12 then e.ModelFollowed = true end
             return true, nil, "model-bergerak"
         end
     end
@@ -1281,7 +1283,16 @@ local function chaseAndGrab(e0)
                 return true, cur, before
             end
         end
-        stepRun(tpos)
+        if S.FlyApproach and FlyFails < 2 and dist > 40 and not before then
+            local okF, whyF = flyLeg(tpos, nil)
+            if okF then
+                FlyFails = 0
+            elseif whyF ~= "abort" then
+                FlyFails += 1
+            end
+        else
+            stepRun(tpos)
+        end
         task.wait()
     end
     return false
@@ -1345,7 +1356,7 @@ end
 
 -- terbang LURUS & secepat mungkin. Kecepatan otomatis turun kalau server menahan (rubberband),
 -- jadi selalu menemukan kecepatan tertinggi yang diterima. return arrived, alasan
-local function flyLeg(pos, abortFn)
+function flyLeg(pos, abortFn)
     local root, h = hrp(), hum()
     local parts, orig = {}, {}
     for _, p in ipairs(char():GetDescendants()) do
@@ -1465,14 +1476,14 @@ local function isFreeState(st, st0)
         or l:find("ground", 1, true) or l:find("loose", 1, true)) ~= nil
 end
 
--- telur dianggap lepas HANYA kalau terbukti: status Record kembali ke slot/jatuh,
--- atau model telur (yang tadi ikut kita) balik ke slot asalnya, atau (tanpa itu) objek hilang DAN darah berkurang
+-- telur dianggap lepas HANYA dengan bukti kuat:
+--  (1) status Record kembali ke slot/jatuh (padahal tadi berubah saat diambil), atau
+--  (2) model telur yang tadi benar-benar ikut kita kini balik ke slot asal sementara kita jauh.
+-- Tidak ada lagi tebakan lemah (darah berkurang / objek hilang) yang bikin karakter putar balik.
 local function lostWatcher(e)
     local t0 = tick()
     local since
     local c = LP.Character
-    local h = c and c:FindFirstChildOfClass("Humanoid")
-    local hp0 = h and h.Health or 0
     return function()
         if not e then return false end
         local lostNow = false
@@ -1483,18 +1494,16 @@ local function lostWatcher(e)
             local ok, pv = pcall(function() return e.Model:GetPivot().Position end)
             local root = c and c:FindFirstChild("HumanoidRootPart")
             if ok and root and (pv - e.ModelHome).Magnitude < 3
-                and (root.Position - e.ModelHome).Magnitude > 25 then
+                and (root.Position - e.ModelHome).Magnitude > 40 then
                 lostNow = true
             end
-        elseif e.Carried and #e.Carried > 0 and h and h.Health < hp0 - 0.5 then
-            if not holding(e) then lostNow = true end
         end
         if not lostNow then
             since = nil
             return false
         end
         since = since or tick()
-        return tick() - since > 0.6 and tick() - t0 > 0.8
+        return tick() - since > 1.0 and tick() - t0 > 1.0
     end
 end
 
@@ -1558,6 +1567,20 @@ local function carryHome(e)
     return status
 end
 
+-- kalau perjalanan ke base gagal tapi telur TIDAK terbukti lepas: paksa lanjut ke base, JANGAN balik ke telur
+local function pushToBase(e)
+    if not S.Base then return "abort" end
+    for _ = 1, 3 do
+        if S.Abort or not RUN.on then return "abort" end
+        local ok = runLeg(S.Base, nil)
+        if ok then
+            task.wait(CONFIG.BaseWait)
+            return "done"
+        end
+    end
+    return "abort"
+end
+
 local function stealEgg(e0)
     if S.Busy then return end
     if not e0.Part or not e0.Part.Parent then
@@ -1571,14 +1594,14 @@ local function stealEgg(e0)
         local known = {}
         for _, c in ipairs(AllCache) do known[c.Part] = true end
         e.Known = known
-        if S.AntiGuard then waitGuardAsleep(e.Part.Position, 12) end
+        if S.AntiGuard then waitGuardAsleep(e.Part.Position, 4) end
         for _ = 1, CONFIG.MaxRetry do
             if S.Abort or not RUN.on then break end
             e.Home, e.CarryState, e.Carried = nil, nil, nil
             local got, cur, before = chaseAndGrab(e)
             if not got then break end
             local ce = cur or e
-            -- langsung terbang ke base (tanpa menunggu), daftar objek yang dibawa dicatat sambil jalan
+            -- langsung berangkat ke base (tanpa menunggu), daftar objek yang dibawa dicatat sambil jalan
             local snap = before or {}
             task.delay(0.35, function() ce.Carried = newCarried(snap) end)
             local status
@@ -1586,13 +1609,14 @@ local function stealEgg(e0)
                 status = carryHome(ce)
                 if status ~= "retry" then break end
             end
+            if status == "retry" then status = pushToBase(ce) end
             if status == "done" then
                 addHistory(ce)
                 return
             elseif status == "abort" then
                 return
             end
-            -- telur lepas (kena hit): kejar telur yang SAMA lagi, bukan telur lain
+            -- status "lost" = telur TERBUKTI lepas (kena hit): kejar telur yang SAMA lagi
             task.wait(0.3)
             local ne = relocate(ce)
             if not ne then break end
@@ -2186,8 +2210,8 @@ TabEgg:CreateButton({
     Callback = function() pcall(function() ZoneDropdown:Refresh(zoneOptions()) end) end,
 })
 TabEgg:CreateSlider({
-    Name = "Speed Boost / Kecepatan Lari ke Telur", Range = {16, 300}, Increment = 1, Suffix = " speed",
-    CurrentValue = 70, Flag = "SpeedSlider",
+    Name = "Speed Boost / Kecepatan Lari (cadangan & dasar)", Range = {16, 400}, Increment = 1, Suffix = " speed",
+    CurrentValue = 150, Flag = "SpeedSlider",
     Callback = function(v) S.SpeedValue = v end,
 })
 TabEgg:CreateToggle({
@@ -2196,6 +2220,10 @@ TabEgg:CreateToggle({
         S.Speed = v
         if not v then pcall(function() hum().WalkSpeed = 16 end) end
     end,
+})
+TabEgg:CreateToggle({
+    Name = "Mendekati telur dengan terbang (lebih cepat, otomatis turun kalau ditahan)", CurrentValue = true, Flag = "FlyApproach",
+    Callback = function(v) S.FlyApproach = v end,
 })
 TabEgg:CreateToggle({
     Name = "Visual lokal: kamera diam di base saat terbang (eksperimen)", CurrentValue = false, Flag = "FakeVisual",
