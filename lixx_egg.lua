@@ -25,6 +25,7 @@ end
 -- CONFIG
 ------------------------------------------------------------
 local CONFIG = {
+    Version = "v10-trace",
     PromptName = "CarryAreaEgg",
     EggFolder = nil,
     EggNamePattern = "egg",
@@ -65,7 +66,8 @@ local S = {
     Steal = false, Speed = false, SpeedValue = 250, FlySpeed = 450, FakeVisual = false, FlyApproach = false,
     SafeDelivery = true, CapFly = false, SafeMult = 1.3, StageDist = 150, Legit = nil,
     Duel = false, Notif = false, GCScan = true,
-    AntiHit = false, AntiTrap = false, AntiGuard = true, Flying = false,
+    AntiHit = false, AntiTrap = false, AntiGuard = true, AntiPush = false, Flying = false,
+    WSBackup = nil, Phase = "-", TraceT0 = 0, TraceDist = -1, NavInfo = "-",
     Forest = nil, Base = nil, BaseRadius = 70,
     OnlyRoot = true, IgnoreBase = true,
     BaseKeys = {}, BaseCenter = nil, BaseRadiusLearned = 70, AllowedZones = {},
@@ -282,6 +284,7 @@ local lastGC = -999
 local FakeChar, FakeHum
 local FlyFails = 0
 local flyLeg
+local Trace, trace = {}, nil
 
 local function findData(name)
     local c = DataCache[name]
@@ -759,7 +762,7 @@ task.spawn(function()
                 txt = "Analyzer: tidak ada telur (semua " .. #AllCache .. " terfilter)"
             end
             if GCRunning then txt = txt .. " | membaca data..." end
-            Banner.Text = txt
+            Banner.Text = CONFIG.Version .. " | " .. txt
         end
         task.wait(CONFIG.ScanInterval)
     end
@@ -822,7 +825,7 @@ local function dumpInfo()
     if DumpBox then DumpBox.Text = "Memproses data game, tunggu beberapa detik..." end
     if DumpFrame then DumpFrame.Visible = true end
     runGC()
-    local out = {"== LIXX EGG DUMP v5 ==",
+    local out = {"== LIXX EGG DUMP " .. CONFIG.Version .. " ==",
         ("OnlyRoot=%s IgnoreBase=%s Terbang gagal=%d"):format(tostring(S.OnlyRoot), tostring(S.IgnoreBase), FlyFails),
         ("Lolos filter: %d | Semua prompt: %d"):format(#EggCache, #AllCache),
         "Deteksi ambil terakhir: " .. tostring(S.LastPick) .. " | Terbang terakhir: " .. tostring(S.LastFly)
@@ -877,6 +880,8 @@ local function dumpInfo()
         for _, k in ipairs(c:GetChildren()) do kids[#kids + 1] = k.Name .. ":" .. k.ClassName end
         out[#out + 1] = "karakter: " .. table.concat(kids, ",")
     end
+    out[#out + 1] = "-- JEJAK STEAL TERAKHIR (detik|fase|jenis|posisi x,y,z|info) --"
+    for i = math.max(1, #Trace - 220), #Trace do out[#out + 1] = Trace[i] end
     local txt = table.concat(out, "\n")
     if setclipboard then pcall(setclipboard, txt) end
     if DumpBox then DumpBox.Text = txt end
@@ -1039,6 +1044,15 @@ local function readLegit()
     if h and not S.Speed and h.WalkSpeed > 0 then S.Legit = h.WalkSpeed end
 end
 
+local function applyAntiPush()
+    local c = LP.Character
+    if not c then return end
+    local sc = c:FindFirstChild("AntiCollisionHighSeedPushBack")
+    if sc and sc:IsA("LocalScript") then
+        pcall(function() sc.Disabled = S.AntiPush end)
+    end
+end
+
 local function releaseControl()
     S.Abort = true
     S.Flying = false
@@ -1053,6 +1067,10 @@ local function releaseControl()
         if h then
             cam.CameraSubject = h
             h.PlatformStand = false
+            if S.WSBackup and not S.Speed then
+                h.WalkSpeed = S.WSBackup
+                S.WSBackup = nil
+            end
         end
         if cam.CameraType == Enum.CameraType.Scriptable then cam.CameraType = Enum.CameraType.Custom end
         local r = c and c:FindFirstChild("HumanoidRootPart")
@@ -1102,6 +1120,7 @@ track(LP.CharacterAdded:Connect(function(c)
     releaseControl()
     hookCharacter(c)
     task.delay(2, function() pcall(readLegit) end)
+    task.delay(1.5, function() pcall(applyAntiPush) end)
 end))
 if LP.Character then hookCharacter(LP.Character) end
 
@@ -1115,10 +1134,52 @@ local lastJump = 0
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
 
--- NAVIGASI LARI: pakai kecepatan jalan ASLI karakter (tidak diubah), tabrakan normal,
--- pathfinding kalau jauh atau macet. Tidak ada terbang / noclip.
+-- PEREKAM JEJAK: tiap 0.1 detik saat steal berjalan (posisi, kecepatan, status, kena hit)
+trace = function(kind, extra)
+    local c = LP.Character
+    local r = c and c:FindFirstChild("HumanoidRootPart")
+    if not r then return end
+    Trace[#Trace + 1] = ("%.1f|%s|%s|%d,%d,%d|%s"):format(tick() - (S.TraceT0 or tick()), S.Phase or "-", kind,
+        r.Position.X, r.Position.Y, r.Position.Z, tostring(extra or ""))
+    if #Trace > 800 then table.remove(Trace, 1) end
+end
+
+task.spawn(function()
+    local lastP, lastT, lastHp
+    while RUN.on do
+        task.wait(0.1)
+        if S.Busy then
+            pcall(function()
+                local c = LP.Character
+                local r = c and c:FindFirstChild("HumanoidRootPart")
+                local h = c and c:FindFirstChildOfClass("Humanoid")
+                if r and h then
+                    local now = tick()
+                    local spd = 0
+                    if lastP and lastT and now > lastT then
+                        local dv = r.Position - lastP
+                        spd = Vector3.new(dv.X, 0, dv.Z).Magnitude / (now - lastT)
+                    end
+                    if lastHp and h.Health < lastHp - 0.5 then
+                        trace("HIT", ("%d->%d"):format(lastHp, h.Health))
+                    end
+                    lastP, lastT, lastHp = r.Position, now, h.Health
+                    trace("s", ("v=%d ws=%d md=%.1f st=%s hp=%d d=%s %s"):format(spd, h.WalkSpeed,
+                        h.MoveDirection.Magnitude, h:GetState().Name, h.Health, tostring(S.TraceDist), tostring(S.NavInfo)))
+                end
+            end)
+        else
+            lastP, lastT, lastHp = nil, nil, nil
+        end
+    end
+end)
+
+-- NAVIGASI LARI: kecepatan jalan ASLI, tabrakan normal. Pathfinding hanya kalau MACET (tidak ada kemajuan),
+-- melambat dekat tujuan supaya tidak terpental, dan geser ke samping kalau tetap macet.
 local function newNav()
-    return {wps = nil, wi = 1, lastPath = -999, stuckT = tick(), stuckPos = nil, jumpT = 0}
+    local t = tick()
+    return {wps = nil, wi = 1, lastPath = -999, stuckT = t, stuckPos = nil, jumpT = 0,
+        progT = t, progD = nil, stuckCount = 0, sideUntil = 0, sideDir = nil}
 end
 
 local function computePath(nav, from, to)
@@ -1135,6 +1196,17 @@ local function computePath(nav, from, to)
             end
         end
     end)
+    if trace then trace("path", nav.wps and #nav.wps or "gagal") end
+end
+
+local function setNearSlow(h, slow)
+    if slow then
+        if not S.WSBackup then S.WSBackup = h.WalkSpeed end
+        if h.WalkSpeed > 60 then h.WalkSpeed = 60 end
+    elseif S.WSBackup then
+        h.WalkSpeed = S.WSBackup
+        S.WSBackup = nil
+    end
 end
 
 -- satu langkah gerak; return true kalau sudah dalam jarak "stop" dari tujuan
@@ -1142,19 +1214,39 @@ local function stepNav(nav, goal, stop)
     local root, h = hrp(), hum()
     local pos = root.Position
     local d = (goal - pos).Magnitude
+    S.TraceDist = math.floor(d)
+    if not S.Speed then setNearSlow(h, d < 40) end
     if d <= stop then return true end
     nav.stuckPos = nav.stuckPos or pos
-    local forceRepath = false
+    local stuck = false
     if tick() - nav.stuckT > 1 then
-        if (pos - nav.stuckPos).Magnitude < 3 then
-            forceRepath = true
-            h.Jump = true
-        end
+        if (pos - nav.stuckPos).Magnitude < 3 then stuck = true end
         nav.stuckT, nav.stuckPos = tick(), pos
     end
-    if (not nav.wps and d > 20 and tick() - nav.lastPath > 2.5) or forceRepath
-        or (nav.wps and tick() - nav.lastPath > 8 and d > 40) then
+    if tick() - nav.progT > 1.2 then
+        if nav.progD and d > nav.progD - 6 then stuck = true end
+        nav.progD, nav.progT = d, tick()
+    end
+    if stuck then
+        nav.stuckCount += 1
+        h.Jump = true
+        if trace then trace("macet", nav.stuckCount) end
         computePath(nav, pos, goal)
+        if not nav.wps and nav.stuckCount >= 2 then
+            local f = goal - pos
+            local flat = Vector3.new(f.X, 0, f.Z)
+            if flat.Magnitude > 0.1 then
+                local u = flat.Unit
+                nav.sideDir = Vector3.new(-u.Z, 0, u.X) * (math.random() < 0.5 and 1 or -1)
+                nav.sideUntil = tick() + 0.6
+            end
+        end
+    end
+    S.NavInfo = ("wp=%s/%s macet=%d"):format(nav.wps and tostring(nav.wi) or "-", nav.wps and tostring(#nav.wps) or "-",
+        nav.stuckCount)
+    if tick() < nav.sideUntil and nav.sideDir then
+        h:MoveTo(pos + nav.sideDir * 15)
+        return false
     end
     local target = goal
     if nav.wps then
@@ -1168,7 +1260,6 @@ local function stepNav(nav, goal, stop)
             nav.wps = nil
         else
             target = w[math.min(nav.wi + 2, n)].Position
-            if w[nav.wi].Action == Enum.PathWaypointAction.Jump then h.Jump = true end
         end
     end
     h:MoveTo(target)
@@ -1243,6 +1334,19 @@ local function firePrompt(e)
     if fireproximityprompt then pcall(fireproximityprompt, pr) end
 end
 
+-- badan telur dibuat tembus SECARA LOKAL (hanya di layar/fisika kita) supaya karakter tidak terpental
+local function ghostEgg(e)
+    pcall(function()
+        e.Part.CanCollide = false
+        if e.Model then
+            if e.Model:IsA("BasePart") then e.Model.CanCollide = false end
+            for _, d in ipairs(e.Model:GetDescendants()) do
+                if d:IsA("BasePart") then d.CanCollide = false end
+            end
+        end
+    end)
+end
+
 -- model telur asli (diberi nama Uid) supaya gerakannya bisa dipantau
 local function findEggModel(e)
     local uid = e.Record and rawget(e.Record, "Uid")
@@ -1266,6 +1370,7 @@ local function prepareEgg(e)
         local ok, pv = pcall(function() return e.Model:GetPivot().Position end)
         if ok then e.ModelHome = pv end
     end
+    ghostEgg(e)
 end
 
 -- telur sudah terambil? return ok, state, nama sinyal
@@ -1304,6 +1409,7 @@ end
 
 local function chaseAndGrab(e0)
     local cur = e0
+    S.Phase = "kejar-telur"
     prepareEgg(cur)
     local dist0 = (e0.Part.Position - hrp().Position).Magnitude
     local limit = math.clamp(dist0 / math.max(hum().WalkSpeed, 16) * 2 + 25, 30, 240)
@@ -1339,11 +1445,13 @@ local function chaseAndGrab(e0)
                 lastFire = tick()
                 if dist <= 14 then closeFires += 1 end
                 firePrompt(cur)
+                if trace then trace("fire", math.floor(dist)) end
             end
             local ok, st, sig = pickedUp(cur, before, enabled0)
             if ok then
                 if st ~= nil then cur.CarryState = st end
                 S.LastPick = sig
+                if trace then trace("PICK", sig) end
                 markPick(cur)
                 return true, cur, before
             end
@@ -1354,7 +1462,7 @@ local function chaseAndGrab(e0)
                 return true, cur, before
             end
         end
-        stepNav(nav, tpos, 3.5)
+        stepNav(nav, tpos, 6)
         task.wait()
     end
     return false
@@ -1498,6 +1606,7 @@ local function carryHome(e)
 
     local ok = true
     if S.Forest then
+        S.Phase = "ke-forest"
         ok = runLeg(S.Forest, abort)
         if ok then
             local w0 = tick()
@@ -1513,7 +1622,11 @@ local function carryHome(e)
         HintShown = true
         showError("Forest belum di-set, langsung ke base (Setting > Set Posisi Forest)")
     end
-    if ok then ok = runLeg(S.Base, abort) end
+    if ok then
+        S.Phase = "ke-base"
+        ok = runLeg(S.Base, abort)
+    end
+    S.Phase = "tunggu-base"
 
     local status = "done"
     if ok then
@@ -1562,6 +1675,9 @@ local function stealEgg(e0)
         return
     end
     S.Busy, S.Abort = true, false
+    Trace = {}
+    S.TraceT0 = tick()
+    S.Phase = "mulai"
     if not S.Legit then pcall(readLegit) end
     local ok, err = pcall(function()
         local e = e0
@@ -1603,6 +1719,7 @@ local function stealEgg(e0)
     if not ok then
         showError("steal error: " .. tostring(err))
     end
+    S.Phase = "selesai"
     releaseControl()
     S.Abort = false
     S.Busy = false
@@ -2123,7 +2240,7 @@ end
 StopHooks[#StopHooks + 1] = function() Rayfield:Destroy() end
 
 local Window = Rayfield:CreateWindow({
-    Name = "LIXX EGG",
+    Name = "LIXX EGG " .. CONFIG.Version,
     LoadingTitle = "LIXX EGG",
     LoadingSubtitle = "Steal an Egg",
     ConfigurationSaving = {Enabled = false},
@@ -2311,6 +2428,13 @@ TabSet:CreateToggle({
     Name = "Anti Penjaga (tunggu penjaga tidur + netralkan tubuh penjaga lokal)", CurrentValue = true, Flag = "AntiGuard",
     Callback = function(v) setAntiGuard(v) end,
 })
+TabSet:CreateToggle({
+    Name = "Matikan script pantul game (AntiCollisionHighSeedPushBack) - eksperimen", CurrentValue = false, Flag = "AntiPush",
+    Callback = function(v)
+        S.AntiPush = v
+        applyAntiPush()
+    end,
+})
 
 ------------------------------------------------------------
 -- TOMBOL LOGO "L"
@@ -2339,6 +2463,6 @@ pcall(readLegit)
 
 Rayfield:Notify({
     Title = "LIXX EGG",
-    Content = "Loaded! Base otomatis = posisi awal. Set Forest (dan Base kalau salah) di menu Setting.",
+    Content = CONFIG.Version .. " loaded! Base otomatis = posisi awal. Set Forest (dan Base kalau salah) di menu Setting.",
     Duration = 8,
 })
