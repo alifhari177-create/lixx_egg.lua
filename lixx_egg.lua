@@ -53,6 +53,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local PathfindingService = game:GetService("PathfindingService")
 local LP = Players.LocalPlayer
 
 local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
@@ -61,7 +62,8 @@ local httpRequest = (syn and syn.request) or (http and http.request) or http_req
 -- STATE
 ------------------------------------------------------------
 local S = {
-    Steal = false, Speed = false, SpeedValue = 150, FlySpeed = 450, FakeVisual = false, FlyApproach = true,
+    Steal = false, Speed = false, SpeedValue = 150, FlySpeed = 450, FakeVisual = false, FlyApproach = false,
+    SafeDelivery = true, CapFly = false, SafeMult = 1.3, StageDist = 150, Legit = nil,
     Duel = false, Notif = false, GCScan = true,
     AntiHit = false, AntiTrap = false, AntiGuard = true, Flying = false,
     Forest = nil, Base = nil, BaseRadius = 70,
@@ -823,7 +825,8 @@ local function dumpInfo()
     local out = {"== LIXX EGG DUMP v5 ==",
         ("OnlyRoot=%s IgnoreBase=%s Terbang gagal=%d"):format(tostring(S.OnlyRoot), tostring(S.IgnoreBase), FlyFails),
         ("Lolos filter: %d | Semua prompt: %d"):format(#EggCache, #AllCache),
-        "Deteksi ambil terakhir: " .. tostring(S.LastPick) .. " | Terbang terakhir: " .. tostring(S.LastFly)}
+        "Deteksi ambil terakhir: " .. tostring(S.LastPick) .. " | Terbang terakhir: " .. tostring(S.LastFly)
+            .. " | Pengiriman: " .. tostring(S.LastSafe) .. " | KecepatanAsli=" .. tostring(S.Legit)}
     local rec, fb = 0, 0
     for _, e in ipairs(AllCache) do
         if e.Src == "record" then rec += 1 else fb += 1 end
@@ -1030,6 +1033,12 @@ end
 ------------------------------------------------------------
 -- KONTROL AMAN: lepas semua kunci (kamera, terbang, kembaran) kapan saja
 ------------------------------------------------------------
+local function readLegit()
+    local c = LP.Character
+    local h = c and c:FindFirstChildOfClass("Humanoid")
+    if h and not S.Speed and h.WalkSpeed > 0 then S.Legit = h.WalkSpeed end
+end
+
 local function releaseControl()
     S.Abort = true
     S.Flying = false
@@ -1044,6 +1053,7 @@ local function releaseControl()
         if h then
             cam.CameraSubject = h
             h.PlatformStand = false
+            if S.Legit and not S.Speed then h.WalkSpeed = S.Legit end
         end
         if cam.CameraType == Enum.CameraType.Scriptable then cam.CameraType = Enum.CameraType.Custom end
         local r = c and c:FindFirstChild("HumanoidRootPart")
@@ -1092,6 +1102,7 @@ end
 track(LP.CharacterAdded:Connect(function(c)
     releaseControl()
     hookCharacter(c)
+    task.delay(2, function() pcall(readLegit) end)
 end))
 if LP.Character then hookCharacter(LP.Character) end
 
@@ -1124,6 +1135,15 @@ local function stepRun(tpos, speedOverride)
             lastJump = tick()
         end
     end
+end
+
+-- kecepatan lari saat bawa telur (dibatasi kalau mode aman aktif)
+local function carrySpeed()
+    local base = math.max(S.SpeedValue, 150)
+    if S.SafeDelivery then
+        return math.max(math.min(base, (S.Legit or 16) * S.SafeMult), 16)
+    end
+    return base
 end
 
 local function grabOnce(e)
@@ -1236,6 +1256,12 @@ local function pickedUp(e, before, enabled0)
     return false
 end
 
+local function markPick(c)
+    c.PickT = tick()
+    local ok, r = pcall(hrp)
+    c.PickPos = ok and r.Position or c.Part.Position
+end
+
 local function chaseAndGrab(e0)
     local cur = e0
     prepareEgg(cur)
@@ -1243,10 +1269,12 @@ local function chaseAndGrab(e0)
     local limit = math.clamp(dist0 / math.max(S.SpeedValue, 16) * 1.6 + 15, 25, 150)
     local t0, lastFire, closeFires = tick(), 0, 0
     local before, enabled0
+    local wps, wi, stuckT, stuckPos = nil, 1, tick(), hrp().Position
     while tick() - t0 < limit and not S.Abort and RUN.on do
         if not cur.Part or not cur.Part.Parent then
             if before and tick() - lastFire < 0.6 then
                 S.LastPick = "part-hilang"
+                markPick(cur)
                 return true, cur, before
             end
             local nx = relocate(cur)
@@ -1275,11 +1303,13 @@ local function chaseAndGrab(e0)
             if ok then
                 if st ~= nil then cur.CarryState = st end
                 S.LastPick = sig
+                markPick(cur)
                 return true, cur, before
             end
             -- pengaman: sudah beberapa kali ditekan dari jarak dekat = anggap terambil, JANGAN muter-muter di dekat penjaga
             if closeFires >= 5 then
                 S.LastPick = "diasumsikan"
+                markPick(cur)
                 return true, cur, before
             end
         end
@@ -1291,7 +1321,32 @@ local function chaseAndGrab(e0)
                 FlyFails += 1
             end
         else
-            stepRun(tpos)
+            -- macet (terhalang tembok/air)? pakai pathfinding supaya tidak tembus dan tidak mati
+            if tick() - stuckT > 1 then
+                if (root.Position - stuckPos).Magnitude < 3 and dist > 12 and not wps then
+                    pcall(function()
+                        local path = PathfindingService:CreatePath({AgentRadius = 2, AgentHeight = 5, AgentCanJump = true})
+                        path:ComputeAsync(root.Position, tpos)
+                        if path.Status == Enum.PathStatus.Success then
+                            wps = path:GetWaypoints()
+                            wi = 2
+                        end
+                    end)
+                end
+                stuckT, stuckPos = tick(), root.Position
+            end
+            local goal = tpos
+            if wps then
+                local w = wps[wi]
+                if w then
+                    goal = w.Position
+                    if w.Action == Enum.PathWaypointAction.Jump then hum().Jump = true end
+                    if (root.Position - w.Position).Magnitude < 4 then wi += 1 end
+                else
+                    wps = nil
+                end
+            end
+            stepRun(goal)
         end
         task.wait()
     end
@@ -1374,7 +1429,9 @@ function flyLeg(pos, abortFn)
     S.Flying = true
     local target = pos + Vector3.new(0, 3, 0)
     local spd = math.min(CONFIG.FlyMax, (S.FlyGood or CONFIG.FlyMax) * 2)
+    if S.CapFly then spd = math.min(spd, math.max((S.Legit or 16) * S.SafeMult, 8)) end
     local spd0 = spd
+    local minSpd = math.min(40, spd0 * 0.4)
     local t0 = tick()
     local arrived, why = false, "timeout"
     local checkT, checkD = tick(), (target - root.Position).Magnitude
@@ -1412,7 +1469,7 @@ function flyLeg(pos, abortFn)
             local expected = math.min(spd, math.max(d * 20, 30)) * 0.5
             if progressed < expected * 0.3 then
                 spd = spd * 0.5
-                if spd < 40 then
+                if spd < minSpd then
                     why = "stuck"
                     break
                 end
@@ -1448,7 +1505,7 @@ local function runLeg(pos, abortFn)
         if S.Abort then return false, "abort" end
         if abortFn and abortFn() then return false, "abort" end
         if (hrp().Position - pos).Magnitude <= 8 then return true, "arrived" end
-        stepRun(pos, math.max(S.SpeedValue, 150))
+        stepRun(pos, carrySpeed())
         task.wait()
     end
     return (hrp().Position - pos).Magnitude <= 12, "timeout"
@@ -1507,6 +1564,40 @@ local function lostWatcher(e)
     end
 end
 
+-- melayang diam di tempat sampai waktu tertentu (tidak jatuh ke air/void)
+local function hover(untilT, abortFn)
+    local root, h = hrp(), hum()
+    local bv = Instance.new("BodyVelocity")
+    bv.Name = "LIXX_BV"
+    bv.MaxForce = Vector3.new(1e9, 1e9, 1e9)
+    bv.Velocity = Vector3.zero
+    bv.Parent = root
+    h.PlatformStand = true
+    S.Flying = true
+    local ok = true
+    while tick() < untilT do
+        if S.Abort or not RUN.on then
+            ok = false
+            break
+        end
+        if abortFn and abortFn() then
+            ok = false
+            break
+        end
+        if not root.Parent then
+            ok = false
+            break
+        end
+        bv.Velocity = Vector3.zero
+        task.wait(0.05)
+    end
+    pcall(function() bv:Destroy() end)
+    S.Flying = false
+    pcall(function() h.PlatformStand = false end)
+    if root.Parent then root.AssemblyLinearVelocity = Vector3.zero end
+    return ok
+end
+
 -- return: "done" | "lost" | "abort" | "retry"
 local function carryHome(e)
     lastDeliver = tick()
@@ -1526,6 +1617,17 @@ local function carryHome(e)
     end
 
     startFake(S.Base)
+
+    -- server menolak "Delivery Egg" kalau jarak/waktu sejak ambil tidak masuk akal.
+    -- Hitung waktu minimal; terbang cepat ke titik tunggu, melayang sampai cukup, baru masuk base.
+    local legit = math.max((S.Legit or 16) * S.SafeMult, 8)
+    local pickPos = (e and e.PickPos) or hrp().Position
+    local pickT = (e and e.PickT) or tick()
+    local total = (S.Base - pickPos).Magnitude
+    local needT = total / legit * 1.1 + 0.5
+    local deadline = pickT + needT
+    S.LastSafe = ("aman=%s legit=%.0f jarak=%.0f butuh=%.1fs"):format(tostring(S.SafeDelivery), legit, total, needT)
+
     local ok = true
     if S.Forest then
         ok = moveLeg(S.Forest, abort)
@@ -1542,6 +1644,16 @@ local function carryHome(e)
     elseif not HintShown then
         HintShown = true
         showError("Forest belum di-set, langsung ke base (Setting > Set Posisi Forest)")
+    end
+
+    if ok and S.SafeDelivery then
+        local toBase = S.Base - hrp().Position
+        if toBase.Magnitude > S.StageDist + 20 then
+            ok = moveLeg(S.Base - toBase.Unit * S.StageDist, abort)
+        end
+        if ok and tick() < deadline then
+            ok = hover(deadline, abort)
+        end
     end
     if ok then ok = moveLeg(S.Base, abort) end
 
@@ -1588,6 +1700,7 @@ local function stealEgg(e0)
         return
     end
     S.Busy, S.Abort = true, false
+    if not S.Legit then pcall(readLegit) end
     local ok, err = pcall(function()
         local e = e0
         e.OrigPos = e.OrigPos or e.Part.Position
@@ -2222,8 +2335,26 @@ TabEgg:CreateToggle({
     end,
 })
 TabEgg:CreateToggle({
-    Name = "Mendekati telur dengan terbang (lebih cepat, otomatis turun kalau ditahan)", CurrentValue = true, Flag = "FlyApproach",
+    Name = "Mendekati telur dengan terbang (TEMBUS dinding, berisiko mati)", CurrentValue = false, Flag = "FlyApproach",
     Callback = function(v) S.FlyApproach = v end,
+})
+TabEgg:CreateToggle({
+    Name = "Mode aman anti 'Delivery Egg' (tunggu sebelum masuk base)", CurrentValue = true, Flag = "SafeDelivery",
+    Callback = function(v) S.SafeDelivery = v end,
+})
+TabEgg:CreateSlider({
+    Name = "Pengali kecepatan aman (x kecepatan jalan asli)", Range = {0.5, 5}, Increment = 0.1, Suffix = "x",
+    CurrentValue = 1.3, Flag = "SafeMult",
+    Callback = function(v) S.SafeMult = v end,
+})
+TabEgg:CreateSlider({
+    Name = "Jarak titik tunggu sebelum base", Range = {50, 400}, Increment = 10, Suffix = " studs",
+    CurrentValue = 150, Flag = "StageDist",
+    Callback = function(v) S.StageDist = v end,
+})
+TabEgg:CreateToggle({
+    Name = "Batasi kecepatan terbang = kecepatan asli (paling aman, lebih lambat)", CurrentValue = false, Flag = "CapFly",
+    Callback = function(v) S.CapFly = v end,
 })
 TabEgg:CreateToggle({
     Name = "Visual lokal: kamera diam di base saat terbang (eksperimen)", CurrentValue = false, Flag = "FakeVisual",
@@ -2364,6 +2495,7 @@ end)
 pcall(function()
     if not S.Base then S.Base = hrp().Position end
 end)
+pcall(readLegit)
 
 Rayfield:Notify({
     Title = "LIXX EGG",
